@@ -1,6 +1,7 @@
 //! Spacebot CLI entry point.
 
 use anyhow::Context as _;
+use arc_swap::ArcSwap;
 use clap::Parser;
 use futures::StreamExt as _;
 use std::collections::HashMap;
@@ -154,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
         // Build the RuntimeConfig with all hot-reloadable values
         let runtime_config = Arc::new(spacebot::config::RuntimeConfig::new(
             agent_config,
+            &config.defaults,
             prompts,
             identity,
             skills,
@@ -191,55 +193,17 @@ async fn main() -> anyhow::Result<()> {
     // Initialize messaging adapters
     let mut messaging_manager = spacebot::messaging::MessagingManager::new();
 
+    // Shared Discord permissions (hot-reloadable via file watcher)
+    let discord_permissions = config.messaging.discord.as_ref().map(|discord_config| {
+        let perms = spacebot::config::DiscordPermissions::from_config(discord_config, &config.bindings);
+        Arc::new(ArcSwap::from_pointee(perms))
+    });
+
     if let Some(discord_config) = &config.messaging.discord {
         if discord_config.enabled {
-            let discord_bindings: Vec<&spacebot::config::Binding> = config
-                .bindings
-                .iter()
-                .filter(|b| b.channel == "discord")
-                .collect();
-
-            let guild_filter: Option<Vec<u64>> = {
-                let guild_ids: Vec<u64> = discord_bindings
-                    .iter()
-                    .filter_map(|b| b.guild_id.as_ref()?.parse::<u64>().ok())
-                    .collect();
-
-                if guild_ids.is_empty() {
-                    None
-                } else {
-                    Some(guild_ids)
-                }
-            };
-
-            let channel_filter: HashMap<u64, Vec<u64>> = {
-                let mut filter: HashMap<u64, Vec<u64>> = HashMap::new();
-                for binding in &discord_bindings {
-                    if let Some(guild_id) = binding.guild_id.as_ref().and_then(|g| g.parse::<u64>().ok()) {
-                        if !binding.channel_ids.is_empty() {
-                            let channel_ids: Vec<u64> = binding
-                                .channel_ids
-                                .iter()
-                                .filter_map(|id| id.parse::<u64>().ok())
-                                .collect();
-                            filter.entry(guild_id).or_default().extend(channel_ids);
-                        }
-                    }
-                }
-                filter
-            };
-
-            let dm_allowed_users: Vec<u64> = discord_config
-                .dm_allowed_users
-                .iter()
-                .filter_map(|id| id.parse::<u64>().ok())
-                .collect();
-
             let adapter = spacebot::messaging::discord::DiscordAdapter::new(
                 &discord_config.token,
-                guild_filter,
-                channel_filter,
-                dm_allowed_users,
+                discord_permissions.clone().expect("discord permissions initialized when discord is enabled"),
             );
             messaging_manager.register(adapter);
         }
@@ -337,14 +301,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let default_agent_id = config.default_agent_id().to_string();
-    let bindings = config.bindings.clone();
+    let bindings: Arc<ArcSwap<Vec<spacebot::config::Binding>>> =
+        Arc::new(ArcSwap::from_pointee(config.bindings.clone()));
 
-    // Start file watcher for hot-reloading config, prompts, identity, and skills
+    // Start file watcher for hot-reloading config, prompts, identity, skills, bindings, and discord permissions
     let config_path = config.instance_dir.join("config.toml");
     let _file_watcher = spacebot::config::spawn_file_watcher(
         config_path,
         config.instance_dir.clone(),
         watcher_agents,
+        discord_permissions,
+        bindings.clone(),
     );
 
     // Active conversation channels: conversation_id -> ActiveChannel
@@ -354,9 +321,10 @@ async fn main() -> anyhow::Result<()> {
     loop {
         tokio::select! {
             Some(mut message) = inbound_stream.next() => {
-                // Resolve which agent handles this message
+                // Resolve which agent handles this message (bindings hot-reload on config change)
+                let current_bindings = bindings.load();
                 let agent_id = spacebot::config::resolve_agent_for_message(
-                    &bindings,
+                    &current_bindings,
                     &message,
                     &default_agent_id,
                 );

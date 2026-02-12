@@ -68,7 +68,7 @@ async fn bootstrap_deps() -> anyhow::Result<spacebot::AgentDeps> {
     .await;
 
     let runtime_config = Arc::new(spacebot::config::RuntimeConfig::new(
-        agent_config, prompts, identity, skills,
+        agent_config, &config.defaults, prompts, identity, skills,
     ));
 
     let (event_tx, _) = tokio::sync::broadcast::channel(16);

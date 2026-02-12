@@ -51,6 +51,7 @@ pub struct DefaultsConfig {
     pub brave_search_key: Option<String>,
     pub history_backfill_count: usize,
     pub heartbeats: Vec<HeartbeatDef>,
+    pub opencode: OpenCodeConfig,
 }
 
 /// Compaction threshold configuration.
@@ -142,6 +143,37 @@ impl Default for BrowserConfig {
             evaluate_enabled: false,
             executable_path: None,
             screenshot_dir: None,
+        }
+    }
+}
+
+/// OpenCode subprocess worker configuration.
+#[derive(Debug, Clone)]
+pub struct OpenCodeConfig {
+    /// Whether OpenCode workers are available.
+    pub enabled: bool,
+    /// Path to the OpenCode binary. Supports "env:VAR_NAME" references.
+    /// Falls back to "opencode" on PATH.
+    pub path: String,
+    /// Maximum concurrent OpenCode server processes.
+    pub max_servers: usize,
+    /// Timeout in seconds waiting for a server to become healthy.
+    pub server_startup_timeout_secs: u64,
+    /// Maximum restart attempts before giving up on a server.
+    pub max_restart_retries: u32,
+    /// Permission settings passed to OpenCode's config.
+    pub permissions: crate::opencode::OpenCodePermissions,
+}
+
+impl Default for OpenCodeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: "opencode".to_string(),
+            max_servers: 5,
+            server_startup_timeout_secs: 30,
+            max_restart_retries: 5,
+            permissions: crate::opencode::OpenCodePermissions::default(),
         }
     }
 }
@@ -251,6 +283,7 @@ impl Default for DefaultsConfig {
             brave_search_key: None,
             history_backfill_count: 50,
             heartbeats: Vec::new(),
+            opencode: OpenCodeConfig::default(),
         }
     }
 }
@@ -434,6 +467,72 @@ pub struct DiscordConfig {
     pub dm_allowed_users: Vec<String>,
 }
 
+/// Hot-reloadable Discord permission filters.
+///
+/// Derived from bindings + discord config. Shared with the Discord adapter
+/// via `Arc<ArcSwap<..>>` so the file watcher can swap in new values without
+/// restarting the gateway connection.
+#[derive(Debug, Clone, Default)]
+pub struct DiscordPermissions {
+    pub guild_filter: Option<Vec<u64>>,
+    pub channel_filter: std::collections::HashMap<u64, Vec<u64>>,
+    pub dm_allowed_users: Vec<u64>,
+}
+
+impl DiscordPermissions {
+    /// Build from the current config's discord settings and bindings.
+    pub fn from_config(discord: &DiscordConfig, bindings: &[Binding]) -> Self {
+        let discord_bindings: Vec<&Binding> =
+            bindings.iter().filter(|b| b.channel == "discord").collect();
+
+        let guild_filter = {
+            let guild_ids: Vec<u64> = discord_bindings
+                .iter()
+                .filter_map(|b| b.guild_id.as_ref()?.parse::<u64>().ok())
+                .collect();
+            if guild_ids.is_empty() {
+                None
+            } else {
+                Some(guild_ids)
+            }
+        };
+
+        let channel_filter = {
+            let mut filter: std::collections::HashMap<u64, Vec<u64>> =
+                std::collections::HashMap::new();
+            for binding in &discord_bindings {
+                if let Some(guild_id) = binding
+                    .guild_id
+                    .as_ref()
+                    .and_then(|g| g.parse::<u64>().ok())
+                {
+                    if !binding.channel_ids.is_empty() {
+                        let channel_ids: Vec<u64> = binding
+                            .channel_ids
+                            .iter()
+                            .filter_map(|id| id.parse::<u64>().ok())
+                            .collect();
+                        filter.entry(guild_id).or_default().extend(channel_ids);
+                    }
+                }
+            }
+            filter
+        };
+
+        let dm_allowed_users = discord
+            .dm_allowed_users
+            .iter()
+            .filter_map(|id| id.parse::<u64>().ok())
+            .collect();
+
+        Self {
+            guild_filter,
+            channel_filter,
+            dm_allowed_users,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WebhookConfig {
     pub enabled: bool,
@@ -477,6 +576,7 @@ struct TomlDefaultsConfig {
     cortex: Option<TomlCortexConfig>,
     browser: Option<TomlBrowserConfig>,
     brave_search_key: Option<String>,
+    opencode: Option<TomlOpenCodeConfig>,
 }
 
 #[derive(Deserialize, Default)]
@@ -531,6 +631,23 @@ struct TomlBrowserConfig {
     evaluate_enabled: Option<bool>,
     executable_path: Option<String>,
     screenshot_dir: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TomlOpenCodeConfig {
+    enabled: Option<bool>,
+    path: Option<String>,
+    max_servers: Option<usize>,
+    server_startup_timeout_secs: Option<u64>,
+    max_restart_retries: Option<u32>,
+    permissions: Option<TomlOpenCodePermissions>,
+}
+
+#[derive(Deserialize)]
+struct TomlOpenCodePermissions {
+    edit: Option<String>,
+    bash: Option<String>,
+    webfetch: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -880,6 +997,37 @@ impl Config {
                 .or_else(|| std::env::var("BRAVE_SEARCH_API_KEY").ok()),
             history_backfill_count: base_defaults.history_backfill_count,
             heartbeats: base_defaults.heartbeats,
+            opencode: toml
+                .defaults
+                .opencode
+                .map(|oc| {
+                    let base = &base_defaults.opencode;
+                    let path_raw = oc.path.unwrap_or_else(|| base.path.clone());
+                    let resolved_path =
+                        resolve_env_value(&path_raw).unwrap_or_else(|| base.path.clone());
+                    OpenCodeConfig {
+                        enabled: oc.enabled.unwrap_or(base.enabled),
+                        path: resolved_path,
+                        max_servers: oc.max_servers.unwrap_or(base.max_servers),
+                        server_startup_timeout_secs: oc
+                            .server_startup_timeout_secs
+                            .unwrap_or(base.server_startup_timeout_secs),
+                        max_restart_retries: oc
+                            .max_restart_retries
+                            .unwrap_or(base.max_restart_retries),
+                        permissions: oc
+                            .permissions
+                            .map(|p| crate::opencode::OpenCodePermissions {
+                                edit: p.edit.unwrap_or_else(|| base.permissions.edit.clone()),
+                                bash: p.bash.unwrap_or_else(|| base.permissions.bash.clone()),
+                                webfetch: p
+                                    .webfetch
+                                    .unwrap_or_else(|| base.permissions.webfetch.clone()),
+                            })
+                            .unwrap_or_else(|| base.permissions.clone()),
+                    }
+                })
+                .unwrap_or_else(|| base_defaults.opencode.clone()),
         };
 
         let mut agents: Vec<AgentConfig> = toml
@@ -1046,16 +1194,27 @@ pub struct RuntimeConfig {
     pub prompts: ArcSwap<crate::identity::Prompts>,
     pub identity: ArcSwap<crate::identity::Identity>,
     pub skills: ArcSwap<crate::skills::SkillSet>,
+    pub opencode: ArcSwap<OpenCodeConfig>,
+    /// Shared pool of OpenCode server processes. Lazily initialized on first use.
+    pub opencode_server_pool: Arc<crate::opencode::OpenCodeServerPool>,
 }
 
 impl RuntimeConfig {
     /// Build from a resolved agent config, loaded prompts, identity, and skills.
     pub fn new(
         agent_config: &ResolvedAgentConfig,
+        defaults: &DefaultsConfig,
         prompts: crate::identity::Prompts,
         identity: crate::identity::Identity,
         skills: crate::skills::SkillSet,
     ) -> Self {
+        let opencode_config = &defaults.opencode;
+        let server_pool = crate::opencode::OpenCodeServerPool::new(
+            opencode_config.path.clone(),
+            opencode_config.permissions.clone(),
+            opencode_config.max_servers,
+        );
+
         Self {
             routing: ArcSwap::from_pointee(agent_config.routing.clone()),
             compaction: ArcSwap::from_pointee(agent_config.compaction),
@@ -1072,6 +1231,8 @@ impl RuntimeConfig {
             prompts: ArcSwap::from_pointee(prompts),
             identity: ArcSwap::from_pointee(identity),
             skills: ArcSwap::from_pointee(skills),
+            opencode: ArcSwap::from_pointee(defaults.opencode.clone()),
+            opencode_server_pool: Arc::new(server_pool),
         }
     }
 
@@ -1143,6 +1304,8 @@ pub fn spawn_file_watcher(
     config_path: PathBuf,
     instance_dir: PathBuf,
     agents: Vec<(String, PathBuf, Arc<RuntimeConfig>)>,
+    discord_permissions: Option<Arc<arc_swap::ArcSwap<DiscordPermissions>>>,
+    bindings: Arc<arc_swap::ArcSwap<Vec<Binding>>>,
 ) -> tokio::task::JoinHandle<()> {
     use notify::{Event, RecursiveMode, Watcher};
     use std::time::Duration;
@@ -1260,6 +1423,21 @@ pub fn spawn_file_watcher(
             } else {
                 None
             };
+
+            // Reload instance-level bindings and Discord permissions
+            if let Some(config) = &new_config {
+                bindings.store(Arc::new(config.bindings.clone()));
+                tracing::info!("bindings reloaded ({} entries)", config.bindings.len());
+
+                if let Some(ref perms) = discord_permissions {
+                    if let Some(discord_config) = &config.messaging.discord {
+                        let new_perms =
+                            DiscordPermissions::from_config(discord_config, &config.bindings);
+                        perms.store(Arc::new(new_perms));
+                        tracing::info!("discord permissions reloaded");
+                    }
+                }
+            }
 
             // Apply reloads to each agent's RuntimeConfig
             for (agent_id, workspace, runtime_config) in &agents {

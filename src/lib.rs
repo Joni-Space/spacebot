@@ -11,6 +11,7 @@ pub mod identity;
 pub mod llm;
 pub mod memory;
 pub mod messaging;
+pub mod opencode;
 pub mod secrets;
 pub mod settings;
 pub mod skills;
@@ -123,6 +124,21 @@ pub enum ProcessEvent {
         agent_id: AgentId,
         process_id: ProcessId,
         status: String,
+    },
+    WorkerPermission {
+        agent_id: AgentId,
+        worker_id: WorkerId,
+        channel_id: Option<ChannelId>,
+        permission_id: String,
+        description: String,
+        patterns: Vec<String>,
+    },
+    WorkerQuestion {
+        agent_id: AgentId,
+        worker_id: WorkerId,
+        channel_id: Option<ChannelId>,
+        question_id: String,
+        questions: Vec<opencode::QuestionInfo>,
     },
 }
 

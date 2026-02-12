@@ -709,6 +709,99 @@ pub async fn spawn_worker_from_state(
     Ok(worker_id)
 }
 
+/// Spawn an OpenCode-backed worker for coding tasks.
+///
+/// Instead of a Rig agent loop, this spawns an OpenCode subprocess that has its
+/// own codebase exploration, context management, and tool suite. The worker
+/// communicates with OpenCode via HTTP + SSE.
+pub async fn spawn_opencode_worker_from_state(
+    state: &ChannelState,
+    task: impl Into<String>,
+    directory: &str,
+    interactive: bool,
+) -> std::result::Result<crate::WorkerId, AgentError> {
+    let task = task.into();
+    let directory = std::path::PathBuf::from(directory);
+
+    let rc = &state.deps.runtime_config;
+    let opencode_config = rc.opencode.load();
+
+    if !opencode_config.enabled {
+        return Err(AgentError::Other(anyhow::anyhow!(
+            "OpenCode workers are not enabled in config"
+        )));
+    }
+
+    let server_pool = rc.opencode_server_pool.clone();
+
+    let worker = if interactive {
+        let (worker, _input_tx) = crate::opencode::OpenCodeWorker::new_interactive(
+            Some(state.channel_id.clone()),
+            state.deps.agent_id.clone(),
+            &task,
+            directory,
+            server_pool,
+            state.deps.event_tx.clone(),
+        );
+        // TODO: Store input_tx for routing follow-ups (same gap as builtin interactive workers)
+        worker
+    } else {
+        crate::opencode::OpenCodeWorker::new(
+            Some(state.channel_id.clone()),
+            state.deps.agent_id.clone(),
+            &task,
+            directory,
+            server_pool,
+            state.deps.event_tx.clone(),
+        )
+    };
+
+    let worker_id = worker.id;
+
+    // Spawn the OpenCode worker as a tokio task
+    let deps_event_tx = state.deps.event_tx.clone();
+    let agent_id = state.deps.agent_id.clone();
+    let channel_id = Some(state.channel_id.clone());
+    let task_description = task.clone();
+    tokio::spawn(async move {
+        let result = worker.run().await;
+        match result {
+            Ok(opencode_result) => {
+                let _ = deps_event_tx.send(ProcessEvent::WorkerComplete {
+                    agent_id,
+                    worker_id,
+                    channel_id,
+                    result: opencode_result.result_text,
+                    notify: true,
+                });
+            }
+            Err(error) => {
+                tracing::error!(worker_id = %worker_id, %error, "OpenCode worker failed");
+                let _ = deps_event_tx.send(ProcessEvent::WorkerComplete {
+                    agent_id,
+                    worker_id,
+                    channel_id,
+                    result: format!("OpenCode worker failed: {error}"),
+                    notify: true,
+                });
+            }
+        }
+    });
+
+    {
+        let mut status = state.status_block.write().await;
+        status.add_worker(worker_id, &format!("[opencode] {task_description}"), false);
+    }
+
+    tracing::info!(
+        worker_id = %worker_id,
+        task = %task_description,
+        "OpenCode worker spawned"
+    );
+
+    Ok(worker_id)
+}
+
 /// Build a dynamic description of worker tool capabilities based on runtime config.
 ///
 /// The channel needs to know what its workers can do so it delegates correctly.

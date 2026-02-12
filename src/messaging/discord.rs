@@ -1,13 +1,15 @@
 //! Discord messaging adapter using serenity.
 
+use crate::config::DiscordPermissions;
 use crate::messaging::traits::{HistoryMessage, InboundStream, Messaging};
 use crate::{InboundMessage, MessageContent, OutboundResponse, StatusUpdate};
 
 use anyhow::Context as _;
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serenity::all::{
     ChannelId, ChannelType, Context, CreateThread, EditMessage, EventHandler, GatewayIntents,
-    GetMessages, GuildId, Http, Message, MessageId, Ready, ReactionType, ShardManager, UserId,
+    GetMessages, Http, Message, MessageId, Ready, ReactionType, ShardManager, UserId,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,12 +18,7 @@ use tokio::sync::{RwLock, mpsc};
 /// Discord adapter state.
 pub struct DiscordAdapter {
     token: String,
-    guild_filter: Option<Vec<GuildId>>,
-    /// Per-guild channel allowlist. If a guild has an entry, only those channels are processed.
-    /// Guilds without an entry (or with an empty vec) allow all channels.
-    channel_filter: HashMap<GuildId, Vec<ChannelId>>,
-    /// User IDs allowed to DM the bot. If empty, all DMs are ignored.
-    dm_allowed_users: Vec<UserId>,
+    permissions: Arc<ArcSwap<DiscordPermissions>>,
     http: Arc<RwLock<Option<Arc<Http>>>>,
     bot_user_id: Arc<RwLock<Option<UserId>>>,
     /// Maps InboundMessage.id to the Discord MessageId being edited during streaming.
@@ -34,23 +31,11 @@ pub struct DiscordAdapter {
 impl DiscordAdapter {
     pub fn new(
         token: impl Into<String>,
-        guild_filter: Option<Vec<u64>>,
-        channel_filter: HashMap<u64, Vec<u64>>,
-        dm_allowed_users: Vec<u64>,
+        permissions: Arc<ArcSwap<DiscordPermissions>>,
     ) -> Self {
         Self {
             token: token.into(),
-            guild_filter: guild_filter.map(|ids| ids.into_iter().map(GuildId::new).collect()),
-            channel_filter: channel_filter
-                .into_iter()
-                .map(|(guild, channels)| {
-                    (
-                        GuildId::new(guild),
-                        channels.into_iter().map(ChannelId::new).collect(),
-                    )
-                })
-                .collect(),
-            dm_allowed_users: dm_allowed_users.into_iter().map(UserId::new).collect(),
+            permissions,
             http: Arc::new(RwLock::new(None)),
             bot_user_id: Arc::new(RwLock::new(None)),
             active_messages: Arc::new(RwLock::new(HashMap::new())),
@@ -92,9 +77,7 @@ impl Messaging for DiscordAdapter {
 
         let handler = Handler {
             inbound_tx,
-            guild_filter: self.guild_filter.clone(),
-            channel_filter: self.channel_filter.clone(),
-            dm_allowed_users: self.dm_allowed_users.clone(),
+            permissions: self.permissions.clone(),
             http_slot: self.http.clone(),
             bot_user_id_slot: self.bot_user_id.clone(),
         };
@@ -369,9 +352,7 @@ impl Messaging for DiscordAdapter {
 
 struct Handler {
     inbound_tx: mpsc::Sender<InboundMessage>,
-    guild_filter: Option<Vec<GuildId>>,
-    channel_filter: HashMap<GuildId, Vec<ChannelId>>,
-    dm_allowed_users: Vec<UserId>,
+    permissions: Arc<ArcSwap<DiscordPermissions>>,
     http_slot: Arc<RwLock<Option<Arc<Http>>>>,
     bot_user_id_slot: Arc<RwLock<Option<UserId>>>,
 }
@@ -391,18 +372,21 @@ impl EventHandler for Handler {
             return;
         }
 
+        // Load a snapshot of the current permissions (hot-reloadable)
+        let permissions = self.permissions.load();
+
         // DM filter: if no guild_id, it's a DM — only allow listed users
         if message.guild_id.is_none() {
-            if self.dm_allowed_users.is_empty()
-                || !self.dm_allowed_users.contains(&message.author.id)
+            if permissions.dm_allowed_users.is_empty()
+                || !permissions.dm_allowed_users.contains(&message.author.id.get())
             {
                 return;
             }
         }
 
-        if let Some(filter) = &self.guild_filter {
+        if let Some(filter) = &permissions.guild_filter {
             if let Some(guild_id) = message.guild_id {
-                if !filter.contains(&guild_id) {
+                if !filter.contains(&guild_id.get()) {
                     return;
                 }
             }
@@ -414,14 +398,13 @@ impl EventHandler for Handler {
 
         // Channel filter: allow if the channel ID or its parent (for threads) is in the allowlist
         if let Some(guild_id) = message.guild_id {
-            if let Some(allowed_channels) = self.channel_filter.get(&guild_id) {
+            if let Some(allowed_channels) = permissions.channel_filter.get(&guild_id.get()) {
                 if !allowed_channels.is_empty() {
                     let parent_channel_id = metadata
                         .get("discord_parent_channel_id")
-                        .and_then(|v| v.as_u64())
-                        .map(ChannelId::new);
+                        .and_then(|v| v.as_u64());
 
-                    let direct_match = allowed_channels.contains(&message.channel_id);
+                    let direct_match = allowed_channels.contains(&message.channel_id.get());
                     let parent_match = parent_channel_id
                         .is_some_and(|pid| allowed_channels.contains(&pid));
 
