@@ -322,37 +322,6 @@ No server dependencies. Single binary. All data lives in embedded databases in a
 
 ---
 
-## Project Structure
-
-```
-spacebot/
-├── src/
-│   ├── main.rs              # CLI entry, config loading, startup
-│   ├── lib.rs               # Re-exports, shared types
-│   ├── config.rs            # Configuration loading/validation
-│   ├── daemon.rs            # Background daemonization, IPC, PID management
-│   ├── error.rs             # Top-level error types
-│   ├── agent/               # Channel, branch, worker, compactor, cortex
-│   ├── hooks/               # PromptHook implementations
-│   ├── tools/               # All LLM tools (reply, branch, memory, shell, etc.)
-│   ├── memory/              # Store, types, search, LanceDB, embeddings, maintenance
-│   ├── llm/                 # Model routing, provider clients, SpacebotModel
-│   ├── messaging/           # Discord, Slack, Telegram, webhook adapters
-│   ├── conversation/        # History persistence, context assembly
-│   ├── cron/                # Scheduler, store
-│   ├── identity/            # SOUL.md, IDENTITY.md, USER.md loading
-│   ├── opencode/            # OpenCode subprocess worker integration
-│   ├── secrets/             # Encrypted credential storage (redb)
-│   ├── settings/            # Key-value settings (redb)
-│   └── db/                  # SQLite connection setup, migrations
-├── prompts/                 # System prompts (markdown files, not Rust strings)
-├── migrations/              # SQLite migrations
-├── docs/                    # Architecture and design documentation
-└── Cargo.toml
-```
-
----
-
 ## Documentation
 
 | Doc | Description |
