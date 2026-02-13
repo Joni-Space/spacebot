@@ -243,13 +243,14 @@ async fn run(config: spacebot::config::Config, foreground: bool) -> anyhow::Resu
         .context("failed to start IPC server")?;
 
     // Start HTTP API server if enabled
+    let api_state = Arc::new(spacebot::api::ApiState::new());
     let _http_handle = if config.api.enabled {
         let bind: std::net::SocketAddr = format!("{}:{}", config.api.bind, config.api.port)
             .parse()
             .context("invalid API bind address")?;
         let http_shutdown = shutdown_rx.clone();
         Some(
-            spacebot::api::start_http_server(bind, http_shutdown)
+            spacebot::api::start_http_server(bind, api_state.clone(), http_shutdown)
                 .await
                 .context("failed to start HTTP server")?,
         )
@@ -388,6 +389,17 @@ async fn run(config: spacebot::config::Config, foreground: bool) -> anyhow::Resu
     }
 
     tracing::info!(agent_count = agents.len(), "all agents initialized");
+
+    // Wire agent event streams and DB pools into the API server
+    {
+        let mut agent_pools = std::collections::HashMap::new();
+        for (agent_id, agent) in &agents {
+            let event_rx = agent.deps.event_tx.subscribe();
+            api_state.register_agent_events(agent_id.to_string(), event_rx);
+            agent_pools.insert(agent_id.to_string(), agent.db.sqlite.clone());
+        }
+        api_state.set_agent_pools(agent_pools);
+    }
 
     // Initialize messaging adapters
     let mut messaging_manager = spacebot::messaging::MessagingManager::new();
@@ -621,12 +633,48 @@ async fn run(config: spacebot::config::Config, foreground: bool) -> anyhow::Resu
                     });
 
                     // Spawn outbound response routing: reads from response_rx,
-                    // sends to the messaging adapter
+                    // sends to the messaging adapter and forwards to SSE
                     let messaging_for_outbound = messaging_manager.clone();
                     let outbound_message = message.clone();
                     let outbound_conversation_id = conversation_id.clone();
+                    let api_event_tx = api_state.event_tx.clone();
+                    let sse_agent_id = agent_id.to_string();
+                    let sse_channel_id = conversation_id.clone();
                     let outbound_handle = tokio::spawn(async move {
                         while let Some(response) = response_rx.recv().await {
+                            // Forward relevant events to SSE clients
+                            match &response {
+                                spacebot::OutboundResponse::Text(text) => {
+                                    api_event_tx.send(spacebot::api::ApiEvent::OutboundMessage {
+                                        agent_id: sse_agent_id.clone(),
+                                        channel_id: sse_channel_id.clone(),
+                                        text: text.clone(),
+                                    }).ok();
+                                }
+                                spacebot::OutboundResponse::ThreadReply { text, .. } => {
+                                    api_event_tx.send(spacebot::api::ApiEvent::OutboundMessage {
+                                        agent_id: sse_agent_id.clone(),
+                                        channel_id: sse_channel_id.clone(),
+                                        text: text.clone(),
+                                    }).ok();
+                                }
+                                spacebot::OutboundResponse::Status(spacebot::StatusUpdate::Thinking) => {
+                                    api_event_tx.send(spacebot::api::ApiEvent::TypingState {
+                                        agent_id: sse_agent_id.clone(),
+                                        channel_id: sse_channel_id.clone(),
+                                        is_typing: true,
+                                    }).ok();
+                                }
+                                spacebot::OutboundResponse::Status(spacebot::StatusUpdate::StopTyping) => {
+                                    api_event_tx.send(spacebot::api::ApiEvent::TypingState {
+                                        agent_id: sse_agent_id.clone(),
+                                        channel_id: sse_channel_id.clone(),
+                                        is_typing: false,
+                                    }).ok();
+                                }
+                                _ => {}
+                            }
+
                             match response {
                                 spacebot::OutboundResponse::Status(status) => {
                                     if let Err(error) = messaging_for_outbound
@@ -666,6 +714,14 @@ async fn run(config: spacebot::config::Config, foreground: bool) -> anyhow::Resu
 
                 // Forward the message to the channel
                 if let Some(active) = active_channels.get(&conversation_id) {
+                    // Emit inbound message to SSE clients
+                    api_state.event_tx.send(spacebot::api::ApiEvent::InboundMessage {
+                        agent_id: agent_id.to_string(),
+                        channel_id: conversation_id.clone(),
+                        sender_id: message.sender_id.clone(),
+                        text: message.content.to_string(),
+                    }).ok();
+
                     if let Err(error) = active.message_tx.send(message).await {
                         tracing::error!(
                             conversation_id = %conversation_id,
