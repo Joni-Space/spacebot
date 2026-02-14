@@ -9,6 +9,7 @@ import {
 	type MemorySort,
 	type MemoryType,
 } from "@/api/client";
+import { CortexChatPanel } from "@/components/CortexChatPanel";
 import { Dropdown } from "@/components/Dropdown";
 import { formatTimeAgo } from "@/lib/format";
 
@@ -61,6 +62,7 @@ export function AgentMemories({ agentId }: AgentMemoriesProps) {
 	const [sort, setSort] = useState<MemorySort>("recent");
 	const [typeFilter, setTypeFilter] = useState<MemoryType | null>(null);
 	const [expandedId, setExpandedId] = useState<string | null>(null);
+	const [chatOpen, setChatOpen] = useState(false);
 
 	const parentRef = useRef<HTMLDivElement>(null);
 
@@ -126,7 +128,8 @@ export function AgentMemories({ agentId }: AgentMemoriesProps) {
 	}, [debouncedQuery, sort, typeFilter]);
 
 	return (
-		<div className="flex h-full flex-col">
+		<div className="flex h-full">
+			<div className="flex flex-1 flex-col overflow-hidden">
 			{/* Toolbar */}
 			<div className="flex items-center gap-3 border-b border-app-line/50 bg-app-darkBox/20 px-6 py-3">
 				{/* Search */}
@@ -152,6 +155,22 @@ export function AgentMemories({ agentId }: AgentMemoriesProps) {
 
 				{/* Sort dropdown */}
 				<Dropdown value={sort} onChange={setSort} options={SORT_OPTIONS} />
+
+				{/* Cortex chat toggle */}
+				<button
+					onClick={() => setChatOpen(!chatOpen)}
+					className={`rounded p-1.5 transition-colors ${
+						chatOpen
+							? "bg-violet-500/20 text-violet-400"
+							: "text-ink-faint hover:bg-app-darkBox hover:text-ink-dull"
+					}`}
+					title="Toggle cortex chat"
+				>
+					<svg className="h-4 w-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+						<circle cx="8" cy="8" r="3" />
+						<path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" />
+					</svg>
+				</button>
 			</div>
 
 			{/* Type filter pills */}
@@ -290,6 +309,27 @@ export function AgentMemories({ agentId }: AgentMemoriesProps) {
 					</div>
 				</div>
 			)}
+			</div>
+
+			{/* Cortex chat panel */}
+			<AnimatePresence>
+				{chatOpen && (
+					<motion.div
+						initial={{ width: 0, opacity: 0 }}
+						animate={{ width: 400, opacity: 1 }}
+						exit={{ width: 0, opacity: 0 }}
+						transition={{ type: "spring", stiffness: 400, damping: 30 }}
+						className="flex-shrink-0 overflow-hidden border-l border-app-line/50"
+					>
+						<div className="h-full w-[400px]">
+							<CortexChatPanel
+								agentId={agentId}
+								onClose={() => setChatOpen(false)}
+							/>
+						</div>
+					</motion.div>
+				)}
+			</AnimatePresence>
 		</div>
 	);
 }

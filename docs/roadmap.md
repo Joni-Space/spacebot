@@ -301,4 +301,4 @@ One-click hosted Spacebot for people who don't want to self-host.
 - **Hot reload agent topology** — adding/removing agents without restart
 - **Agent templates** — pre-built configurations for common use cases
 - **JsonSchema-derived tool definitions** — replace hand-written JSON schemas in all 16 tools with the `JsonSchema` derive that's already on every Args struct
-- **SpaceDrive integration** — connect agents to terabytes of pre-computed AI data (transcription, face/voice/place identification, semantic file search)
+- **Spacedrive integration** — connect agents to terabytes of indexed, content-addressed file data across devices (see [docs/spacedrive.md](spacedrive.md))

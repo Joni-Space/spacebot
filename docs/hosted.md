@@ -32,8 +32,7 @@ Each user gets a Fly Machine (Firecracker microVM) with an attached Fly Volume f
 **Why Fly over Kubernetes:**
 
 - Fly's model is literally "one stateful process with a volume" — maps 1:1 to Spacebot
-- Machines suspend when idle (saves VM state including memory), resume in hundreds of milliseconds
-- Suspended machines only pay for storage (~$0.90/mo per idle user)
+- Fly's model is literally "one stateful process with a volume" — maps 1:1 to Spacebot
 - No cluster management, no PVC provisioning delays, no control plane scaling concerns
 - The Docker image is standard — migration to kube later is just a deployment target change
 
@@ -53,9 +52,8 @@ fly-app: spacebot-{user_id}
   machine: spacebot-{user_id}-main
     image: ghcr.io/jamiepine/spacebot:latest
     size: shared-cpu-1x, 512MB RAM
-    volume: /data (5GB default, expandable)
-    auto_stop: suspend
-    auto_start: true (on inbound webhook)
+    volume: /data (10GB default, expandable)
+    auto_stop: off (always-on)
 ```
 
 The volume mounts at `/data`, which becomes the `SPACEBOT_DIR`. Contains everything:
@@ -72,36 +70,20 @@ The volume mounts at `/data`, which becomes the `SPACEBOT_DIR`. Contains everyth
 └── logs/
 ```
 
-### Idle Economics
+### Always-On
 
-Most personal agents are idle 90%+ of the time. Fly's suspend mode saves full VM state (memory + CPU registers) and only charges for storage.
+Spacebot is an active daemon by design. The cortex ticks on an interval, cron jobs fire on schedules, and messaging adapters hold persistent websocket connections. Every hosted instance is always-on — there is no idle/suspend model.
 
-| State | Cost/mo |
-|-------|---------|
-| Idle (suspended, 5GB volume) | ~$0.90 |
-| Light use (4 hrs/day active) | ~$1.50 |
-| Heavy use (always active) | ~$5-7 |
-| Heavy use + browser workers (1GB RAM) | ~$8-12 |
+Approximate per-user infra costs (always-on):
+
+| Tier | Machine Cost/mo | Volume Cost/mo | Total/mo |
+|------|----------------|----------------|----------|
+| Pod (shared-cpu-1x, 512MB, 10GB) | ~$5 | ~$1.50 | ~$6.50 |
+| Outpost (shared-cpu-2x, 1GB, 40GB) | ~$12 | ~$6 | ~$18 |
+| Nebula (performance-2x, 2GB, 80GB) | ~$30 | ~$12 | ~$42 |
+| Titan (performance-4x, 8GB, 250GB) | ~$90 | ~$37.50 | ~$127.50 |
 
 These costs are infrastructure-only, before LLM usage.
-
-### Wake Path
-
-Two ways a suspended machine wakes up:
-
-1. **Inbound webhook** — Fly Proxy detects a request to the app's internal address, wakes the machine, routes the request. This handles the webhook messaging adapter.
-2. **Platform websockets** — Discord/Slack/Telegram use persistent websocket connections that break on suspend. The machine needs to wake on a schedule (or stay alive) if the user has platform adapters configured.
-
-This creates two tiers:
-
-| Tier | Wake Model | Use Case |
-|------|-----------|----------|
-| **Webhook-only** | Suspend when idle, wake on HTTP request | Programmatic access, API-driven agents |
-| **Always-on** | Machine stays running, no suspend | Discord/Slack/Telegram bots that need persistent connections |
-
-Webhook-only is cheaper. Always-on is the default for anyone connecting a messaging platform. Users who only interact via the dashboard or API can use webhook-only.
-
-A middle ground: wake on a schedule (every 5 minutes), reconnect websockets, process any queued messages, then suspend again. This trades latency for cost but adds complexity. Worth exploring post-launch if the always-on cost is a barrier.
 
 ---
 
@@ -179,7 +161,7 @@ Option B is better. The webhook adapter already exists in the architecture. Exte
 - Set active hours and delivery targets
 
 **Monitoring:**
-- Machine status (running, suspended, error)
+- Machine status (running, error)
 - Resource usage (CPU, memory, disk)
 - LLM usage (tokens consumed, cost estimate)
 - Messaging adapter health
@@ -190,13 +172,18 @@ Option B is better. The webhook adapter already exists in the architecture. Exte
 
 ### Plans
 
-| Plan | Price | Includes |
-|------|-------|----------|
-| **Free** | $0/mo | Webhook-only, 1 agent, bring your own API keys, 1GB storage |
-| **Pro** | $15/mo | Always-on, 3 agents, browser workers, 10GB storage, priority support |
-| **Team** | $30/mo | Everything in Pro + 10 agents, shared API key pool with usage billing |
+All instances are always-on. Spacebot is an active daemon — there is no idle/suspend tier.
 
-All plans support bring-your-own API keys (no markup). The Team plan adds a shared key pool where users pay per token at cost + margin.
+| Plan | Price | Machine | Agents | Storage | Features |
+|------|-------|---------|--------|---------|----------|
+| **Pod** | $19/mo | shared-cpu-1x, 512MB | 1 | 10GB | BYOK, all messaging platforms, daily backups |
+| **Outpost** | $39/mo | shared-cpu-2x, 1GB | 3 | 40GB | Browser workers, priority support |
+| **Nebula** | $79/mo | performance-2x, 2GB | 10 | 80GB | Shared API key pool, usage billing, priority support |
+| **Titan** | $249/mo | performance-4x, 8GB | Unlimited | 250GB | Dedicated support, custom domains, SLA, SSO |
+
+Annual pricing at ~30% discount: Pod $13/mo, Outpost $27/mo, Nebula $55/mo, Titan $174/mo.
+
+All plans support bring-your-own API keys at no markup. Nebula and Titan include a shared key pool where users pay per-token at cost + 20% margin.
 
 ### LLM Billing (Shared Keys)
 

@@ -5,9 +5,9 @@
 <h1 align="center">Spacebot</h1>
 
 <p align="center">
-  <strong>An AI agent that actually works in teams and communities.</strong><br/>
-  Handles many users at once. Does real work in the background.<br/>
-  Never blocks. Never goes dark.
+  <strong>An AI agent for teams, communities, and multi-user environments.</strong><br/>
+  Thinks, executes, and responds — concurrently, not sequentially.<br/>
+  Never blocks. Never forgets.
 </p>
 
 <p align="center">
@@ -115,6 +115,33 @@ Cron jobs created and managed from conversation or config:
 - **Active hours** — restrict jobs to specific time windows (supports midnight wrapping)
 - **Circuit breaker** — auto-disables after 3 consecutive failures
 - **Full agent capabilities** — each job gets a fresh channel with branching and workers
+
+### Model Routing
+
+Four-level routing system that picks the right model for every LLM call. Structural routing handles the common case — process types and task types are known at spawn time. Prompt-level routing handles the rest, scoring user messages to downgrade simple requests to cheaper models automatically.
+
+- **Process-type defaults** — channels get the best conversational model, workers get something fast and cheap, compactors get the cheapest tier
+- **Task-type overrides** — a coding worker upgrades to a stronger model, a summarization worker stays cheap
+- **Prompt complexity scoring** — lightweight keyword scorer classifies user messages into three tiers (light/standard/heavy) and routes to the cheapest model that can handle it. Scores the user message only — system prompts and context are excluded. <1ms, no external calls
+- **Fallback chains** — when a model returns 429 or 502, the next model in the chain takes over automatically
+- **Rate limit tracking** — 429'd models are deprioritized across all agents for a configurable cooldown
+- **Per-agent routing profiles** — eco, balanced, or premium presets that shift what models each tier maps to. A budget agent routes simple messages to free models while a premium agent stays on opus
+
+```toml
+[defaults.routing]
+channel = "anthropic/claude-sonnet-4"
+worker = "anthropic/claude-haiku-4.5"
+
+[defaults.routing.task_overrides]
+coding = "anthropic/claude-sonnet-4"
+
+[defaults.routing.prompt_routing]
+enabled = true
+process_types = ["channel", "branch"]
+
+[defaults.routing.fallbacks]
+"anthropic/claude-sonnet-4" = ["anthropic/claude-haiku-4.5"]
+```
 
 ### Skills
 
@@ -253,6 +280,14 @@ Each agent is an independent entity with its own workspace, databases, identity 
 
 ---
 
+### Spacedrive Integration (Future)
+
+Spacebot is the AI counterpart to [Spacedrive](https://github.com/spacedriveapp/spacedrive) — an open source cross-platform file manager built on a virtual distributed filesystem. Both projects are independent and fully functional on their own, but complementary by design. Spacedrive indexes files across all your devices, clouds, and platforms with content-addressed identity, semantic search, and local AI analysis. Spacebot brings autonomous reasoning, memory, and task execution. Together, an agent that can think, remember, and act — backed by terabytes of queryable data across every device you own.
+
+Read the full vision in [docs/spacedrive.md](docs/spacedrive.md).
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -343,6 +378,7 @@ No server dependencies. Single binary. All data lives in embedded databases in a
 | [Browser](docs/browser.md)             | Headless Chrome for workers                              |
 | [OpenCode](docs/opencode.md)           | OpenCode as a worker backend                             |
 | [Philosophy](docs/philosophy.md)       | Why Rust                                                 |
+| [Spacedrive](docs/spacedrive.md)       | Future Spacedrive integration vision                     |
 
 ---
 
