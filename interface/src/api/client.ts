@@ -287,6 +287,46 @@ export interface MemoriesSearchResponse {
 	results: MemorySearchResultItem[];
 }
 
+export type RelationType =
+	| "related_to"
+	| "updates"
+	| "contradicts"
+	| "caused_by"
+	| "result_of"
+	| "part_of";
+
+export interface AssociationItem {
+	id: string;
+	source_id: string;
+	target_id: string;
+	relation_type: RelationType;
+	weight: number;
+	created_at: string;
+}
+
+export interface MemoryGraphResponse {
+	nodes: MemoryItem[];
+	edges: AssociationItem[];
+	total: number;
+}
+
+export interface MemoryGraphNeighborsResponse {
+	nodes: MemoryItem[];
+	edges: AssociationItem[];
+}
+
+export interface MemoryGraphParams {
+	limit?: number;
+	offset?: number;
+	memory_type?: MemoryType;
+	sort?: MemorySort;
+}
+
+export interface MemoryGraphNeighborsParams {
+	depth?: number;
+	exclude?: string[];
+}
+
 export interface MemoriesListParams {
 	limit?: number;
 	offset?: number;
@@ -607,6 +647,20 @@ export const api = {
 		if (params.limit) search.set("limit", String(params.limit));
 		if (params.memory_type) search.set("memory_type", params.memory_type);
 		return fetchJson<MemoriesSearchResponse>(`/agents/memories/search?${search}`);
+	},
+	memoryGraph: (agentId: string, params: MemoryGraphParams = {}) => {
+		const search = new URLSearchParams({ agent_id: agentId });
+		if (params.limit) search.set("limit", String(params.limit));
+		if (params.offset) search.set("offset", String(params.offset));
+		if (params.memory_type) search.set("memory_type", params.memory_type);
+		if (params.sort) search.set("sort", params.sort);
+		return fetchJson<MemoryGraphResponse>(`/agents/memories/graph?${search}`);
+	},
+	memoryGraphNeighbors: (agentId: string, memoryId: string, params: MemoryGraphNeighborsParams = {}) => {
+		const search = new URLSearchParams({ agent_id: agentId, memory_id: memoryId });
+		if (params.depth) search.set("depth", String(params.depth));
+		if (params.exclude?.length) search.set("exclude", params.exclude.join(","));
+		return fetchJson<MemoryGraphNeighborsResponse>(`/agents/memories/graph/neighbors?${search}`);
 	},
 	cortexEvents: (agentId: string, params: CortexEventsParams = {}) => {
 		const search = new URLSearchParams({ agent_id: agentId });

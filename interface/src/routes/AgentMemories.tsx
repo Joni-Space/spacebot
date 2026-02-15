@@ -11,7 +11,10 @@ import {
 } from "@/api/client";
 import { CortexChatPanel } from "@/components/CortexChatPanel";
 import { Dropdown } from "@/components/Dropdown";
+import { MemoryGraph } from "@/components/MemoryGraph";
 import { formatTimeAgo } from "@/lib/format";
+
+type ViewMode = "list" | "graph";
 
 const SORT_OPTIONS: { value: MemorySort; label: string }[] = [
 	{ value: "recent", label: "Recent" },
@@ -57,6 +60,7 @@ interface AgentMemoriesProps {
 }
 
 export function AgentMemories({ agentId }: AgentMemoriesProps) {
+	const [viewMode, setViewMode] = useState<ViewMode>("list");
 	const [searchQuery, setSearchQuery] = useState("");
 	const [debouncedQuery, setDebouncedQuery] = useState("");
 	const [sort, setSort] = useState<MemorySort>("recent");
@@ -156,6 +160,43 @@ export function AgentMemories({ agentId }: AgentMemoriesProps) {
 				{/* Sort dropdown */}
 				<Dropdown value={sort} onChange={setSort} options={SORT_OPTIONS} />
 
+				{/* View mode toggle */}
+				<div className="flex rounded-md border border-app-line bg-app-darkBox">
+					<button
+						onClick={() => setViewMode("list")}
+						className={`rounded-l-md px-2 py-1.5 transition-colors ${
+							viewMode === "list"
+								? "bg-accent/15 text-accent"
+								: "text-ink-faint hover:text-ink-dull"
+						}`}
+						title="List view"
+					>
+						<svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+							<line x1="2" y1="4" x2="14" y2="4" />
+							<line x1="2" y1="8" x2="14" y2="8" />
+							<line x1="2" y1="12" x2="14" y2="12" />
+						</svg>
+					</button>
+					<button
+						onClick={() => setViewMode("graph")}
+						className={`rounded-r-md px-2 py-1.5 transition-colors ${
+							viewMode === "graph"
+								? "bg-accent/15 text-accent"
+								: "text-ink-faint hover:text-ink-dull"
+						}`}
+						title="Graph view"
+					>
+						<svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+							<circle cx="4" cy="4" r="2" />
+							<circle cx="12" cy="4" r="2" />
+							<circle cx="8" cy="12" r="2" />
+							<line x1="5.5" y1="5.2" x2="7" y2="10.5" />
+							<line x1="10.5" y1="5.2" x2="9" y2="10.5" />
+							<line x1="6" y1="4" x2="10" y2="4" />
+						</svg>
+					</button>
+				</div>
+
 				{/* Cortex chat toggle */}
 				<button
 					onClick={() => setChatOpen(!chatOpen)}
@@ -205,109 +246,115 @@ export function AgentMemories({ agentId }: AgentMemoriesProps) {
 				)}
 			</div>
 
-			{/* Table header */}
-			<div className="grid grid-cols-[80px_1fr_100px_120px_100px] gap-3 border-b border-app-line/50 px-6 py-2 text-tiny font-medium uppercase tracking-wider text-ink-faint">
-				<span>Type</span>
-				<span>{isSearching ? "Content / Score" : "Content"}</span>
-				<span>Importance</span>
-				<span>Source</span>
-				<span>Created</span>
-			</div>
-
-			{/* Virtualized rows */}
-			{isLoading ? (
-				<div className="flex flex-1 items-center justify-center">
-					<div className="flex items-center gap-2 text-ink-dull">
-						<div className="h-2 w-2 animate-pulse rounded-full bg-accent" />
-						{isSearching ? "Searching..." : "Loading memories..."}
-					</div>
-				</div>
-			) : isError ? (
-				<div className="flex flex-1 items-center justify-center">
-					<p className="text-sm text-red-400">Failed to load memories</p>
-				</div>
-			) : memories.length === 0 ? (
-				<div className="flex flex-1 items-center justify-center">
-					<p className="text-sm text-ink-faint">
-						{isSearching ? "No results found" : "No memories yet"}
-					</p>
-				</div>
+			{viewMode === "graph" ? (
+				<MemoryGraph agentId={agentId} sort={sort} typeFilter={typeFilter} />
 			) : (
-				<div ref={parentRef} className="flex-1 overflow-y-auto">
-					<div
-						className="relative w-full"
-						style={{ height: virtualizer.getTotalSize() }}
-					>
-						{virtualizer.getVirtualItems().map((virtualRow) => {
-							const memory = memories[virtualRow.index];
-							if (!memory) return null;
-							const isExpanded = expandedId === memory.id;
-							const score = scores?.[memory.id];
+				<>
+					{/* Table header */}
+					<div className="grid grid-cols-[80px_1fr_100px_120px_100px] gap-3 border-b border-app-line/50 px-6 py-2 text-tiny font-medium uppercase tracking-wider text-ink-faint">
+						<span>Type</span>
+						<span>{isSearching ? "Content / Score" : "Content"}</span>
+						<span>Importance</span>
+						<span>Source</span>
+						<span>Created</span>
+					</div>
 
-							return (
-								<div
-									key={memory.id}
-									data-index={virtualRow.index}
-									ref={virtualizer.measureElement}
-									className="absolute left-0 top-0 w-full"
-									style={{ transform: `translateY(${virtualRow.start}px)` }}
-								>
-									<button
-										onClick={() => setExpandedId(isExpanded ? null : memory.id)}
-										className="grid w-full grid-cols-[80px_1fr_100px_120px_100px] items-center gap-3 px-6 py-3 text-left transition-colors hover:bg-app-darkBox/30"
-									>
-										<TypeBadge type={memory.memory_type} />
-										<div className="min-w-0">
-											<p className="truncate text-sm text-ink-dull">
-												{memory.content}
-											</p>
-											{score !== undefined && (
-												<span className="text-tiny text-accent/70">
-													score: {score.toFixed(3)}
-												</span>
-											)}
-										</div>
-										<ImportanceBar value={memory.importance} />
-										<span className="truncate text-tiny text-ink-faint">
-											{memory.source ?? "-"}
-										</span>
-										<span className="text-tiny text-ink-faint">
-											{formatTimeAgo(memory.created_at)}
-										</span>
-									</button>
+					{/* Virtualized rows */}
+					{isLoading ? (
+						<div className="flex flex-1 items-center justify-center">
+							<div className="flex items-center gap-2 text-ink-dull">
+								<div className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+								{isSearching ? "Searching..." : "Loading memories..."}
+							</div>
+						</div>
+					) : isError ? (
+						<div className="flex flex-1 items-center justify-center">
+							<p className="text-sm text-red-400">Failed to load memories</p>
+						</div>
+					) : memories.length === 0 ? (
+						<div className="flex flex-1 items-center justify-center">
+							<p className="text-sm text-ink-faint">
+								{isSearching ? "No results found" : "No memories yet"}
+							</p>
+						</div>
+					) : (
+						<div ref={parentRef} className="flex-1 overflow-y-auto">
+							<div
+								className="relative w-full"
+								style={{ height: virtualizer.getTotalSize() }}
+							>
+								{virtualizer.getVirtualItems().map((virtualRow) => {
+									const memory = memories[virtualRow.index];
+									if (!memory) return null;
+									const isExpanded = expandedId === memory.id;
+									const score = scores?.[memory.id];
 
-									{/* Expanded detail */}
-									<AnimatePresence>
-										{isExpanded && (
-											<motion.div
-												initial={{ height: 0, opacity: 0 }}
-												animate={{ height: "auto", opacity: 1 }}
-												exit={{ height: 0, opacity: 0 }}
-												transition={{ type: "spring", stiffness: 500, damping: 35 }}
-												className="overflow-hidden border-t border-app-line/30 bg-app-darkBox/20 px-6"
+									return (
+										<div
+											key={memory.id}
+											data-index={virtualRow.index}
+											ref={virtualizer.measureElement}
+											className="absolute left-0 top-0 w-full"
+											style={{ transform: `translateY(${virtualRow.start}px)` }}
+										>
+											<button
+												onClick={() => setExpandedId(isExpanded ? null : memory.id)}
+												className="grid w-full grid-cols-[80px_1fr_100px_120px_100px] items-center gap-3 px-6 py-3 text-left transition-colors hover:bg-app-darkBox/30"
 											>
-												<div className="py-4">
-													<p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-dull">
+												<TypeBadge type={memory.memory_type} />
+												<div className="min-w-0">
+													<p className="truncate text-sm text-ink-dull">
 														{memory.content}
 													</p>
-													<div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-tiny text-ink-faint">
-														<span>ID: {memory.id}</span>
-														<span>Accessed: {memory.access_count}x</span>
-														<span>Last accessed: {formatTimeAgo(memory.last_accessed_at)}</span>
-														<span>Updated: {formatTimeAgo(memory.updated_at)}</span>
-														{memory.channel_id && (
-															<span>Channel: {memory.channel_id}</span>
-														)}
-													</div>
+													{score !== undefined && (
+														<span className="text-tiny text-accent/70">
+															score: {score.toFixed(3)}
+														</span>
+													)}
 												</div>
-											</motion.div>
-										)}
-									</AnimatePresence>
-								</div>
-							);
-						})}
-					</div>
-				</div>
+												<ImportanceBar value={memory.importance} />
+												<span className="truncate text-tiny text-ink-faint">
+													{memory.source ?? "-"}
+												</span>
+												<span className="text-tiny text-ink-faint">
+													{formatTimeAgo(memory.created_at)}
+												</span>
+											</button>
+
+											{/* Expanded detail */}
+											<AnimatePresence>
+												{isExpanded && (
+													<motion.div
+														initial={{ height: 0, opacity: 0 }}
+														animate={{ height: "auto", opacity: 1 }}
+														exit={{ height: 0, opacity: 0 }}
+														transition={{ type: "spring", stiffness: 500, damping: 35 }}
+														className="overflow-hidden border-t border-app-line/30 bg-app-darkBox/20 px-6"
+													>
+														<div className="py-4">
+															<p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-dull">
+																{memory.content}
+															</p>
+															<div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-tiny text-ink-faint">
+																<span>ID: {memory.id}</span>
+																<span>Accessed: {memory.access_count}x</span>
+																<span>Last accessed: {formatTimeAgo(memory.last_accessed_at)}</span>
+																<span>Updated: {formatTimeAgo(memory.updated_at)}</span>
+																{memory.channel_id && (
+																	<span>Channel: {memory.channel_id}</span>
+																)}
+															</div>
+														</div>
+													</motion.div>
+												)}
+											</AnimatePresence>
+										</div>
+									);
+								})}
+							</div>
+						</div>
+					)}
+				</>
 			)}
 			</div>
 

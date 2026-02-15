@@ -202,6 +202,100 @@ impl MemoryStore {
         
         Ok(associations)
     }
+
+    /// Get all associations where both source and target are in the provided set.
+    /// Used by the graph view to fetch edges between a known set of visible nodes.
+    pub async fn get_associations_between(&self, memory_ids: &[String]) -> Result<Vec<Association>> {
+        if memory_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build a parameterized IN clause. SQLite handles this fine for
+        // the sizes we deal with (up to ~500 IDs).
+        let placeholders: String = memory_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query_str = format!(
+            "SELECT id, source_id, target_id, relation_type, weight, created_at \
+             FROM associations \
+             WHERE source_id IN ({placeholders}) AND target_id IN ({placeholders})"
+        );
+
+        let mut query = sqlx::query(&query_str);
+        // Bind once for source_id IN, once for target_id IN
+        for id in memory_ids {
+            query = query.bind(id);
+        }
+        for id in memory_ids {
+            query = query.bind(id);
+        }
+
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to get associations between memory set")?;
+
+        Ok(rows.into_iter().map(|row| row_to_association(&row)).collect())
+    }
+
+    /// Get neighbors of a memory: all associations plus the connected memories.
+    /// Returns (neighbors, edges) where neighbors excludes any IDs in `exclude_ids`.
+    pub async fn get_neighbors(
+        &self,
+        memory_id: &str,
+        depth: u32,
+        exclude_ids: &[String],
+    ) -> Result<(Vec<Memory>, Vec<Association>)> {
+        let mut visited: std::collections::HashSet<String> = exclude_ids.iter().cloned().collect();
+        visited.insert(memory_id.to_string());
+
+        let mut all_associations = Vec::new();
+        let mut frontier = vec![memory_id.to_string()];
+
+        for _ in 0..depth {
+            if frontier.is_empty() {
+                break;
+            }
+
+            let mut next_frontier = Vec::new();
+            for node_id in &frontier {
+                let associations = self.get_associations(node_id).await?;
+                for assoc in associations {
+                    let neighbor_id = if assoc.source_id == *node_id {
+                        &assoc.target_id
+                    } else {
+                        &assoc.source_id
+                    };
+
+                    if !visited.contains(neighbor_id) {
+                        visited.insert(neighbor_id.clone());
+                        next_frontier.push(neighbor_id.clone());
+                    }
+                    all_associations.push(assoc);
+                }
+            }
+            frontier = next_frontier;
+        }
+
+        // Deduplicate associations by id
+        let mut seen_assoc_ids = std::collections::HashSet::new();
+        all_associations.retain(|a| seen_assoc_ids.insert(a.id.clone()));
+
+        // Load all neighbor memories (everything visited except the excludes and the seed)
+        let neighbor_ids: Vec<String> = visited
+            .into_iter()
+            .filter(|id| !exclude_ids.contains(id))
+            .collect();
+
+        let mut neighbors = Vec::new();
+        for id in &neighbor_ids {
+            if let Some(memory) = self.load(id).await? {
+                if !memory.forgotten {
+                    neighbors.push(memory);
+                }
+            }
+        }
+
+        Ok((neighbors, all_associations))
+    }
     
     /// Get memories by type.
     pub async fn get_by_type(&self, memory_type: MemoryType, limit: i64) -> Result<Vec<Memory>> {

@@ -5,7 +5,7 @@ use crate::agent::cortex::{CortexEvent, CortexLogger};
 use crate::agent::cortex_chat::{CortexChatEvent, CortexChatMessage, CortexChatStore};
 use crate::conversation::channels::ChannelStore;
 use crate::conversation::history::{ProcessRunLogger, TimelineItem};
-use crate::memory::types::{Memory, MemorySearchResult, MemoryType};
+use crate::memory::types::{Association, Memory, MemorySearchResult, MemoryType};
 use crate::memory::search::{SearchConfig, SearchMode, SearchSort};
 
 use axum::extract::{Query, State};
@@ -163,6 +163,19 @@ struct MemoriesListResponse {
 #[derive(Serialize)]
 struct MemoriesSearchResponse {
     results: Vec<MemorySearchResult>,
+}
+
+#[derive(Serialize)]
+struct MemoryGraphResponse {
+    nodes: Vec<Memory>,
+    edges: Vec<Association>,
+    total: usize,
+}
+
+#[derive(Serialize)]
+struct MemoryGraphNeighborsResponse {
+    nodes: Vec<Memory>,
+    edges: Vec<Association>,
 }
 
 #[derive(Serialize)]
@@ -402,6 +415,8 @@ pub async fn start_http_server(
         .route("/channels/status", get(channel_status))
         .route("/agents/memories", get(list_memories))
         .route("/agents/memories/search", get(search_memories))
+        .route("/agents/memories/graph", get(memory_graph))
+        .route("/agents/memories/graph/neighbors", get(memory_graph_neighbors))
         .route("/cortex/events", get(cortex_events))
         .route("/cortex-chat/messages", get(cortex_chat_messages))
         .route("/cortex-chat/send", post(cortex_chat_send))
@@ -971,6 +986,106 @@ async fn search_memories(
         })?;
 
     Ok(Json(MemoriesSearchResponse { results }))
+}
+
+// -- Memory graph handlers --
+
+#[derive(Deserialize)]
+struct MemoryGraphQuery {
+    agent_id: String,
+    #[serde(default = "default_graph_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default)]
+    memory_type: Option<String>,
+    #[serde(default = "default_memories_sort")]
+    sort: String,
+}
+
+fn default_graph_limit() -> i64 {
+    200
+}
+
+/// Get a subgraph of memories: nodes + all edges between them.
+/// Uses the same sort/filter params as the list endpoint, then fetches
+/// all associations that connect the returned nodes.
+async fn memory_graph(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<MemoryGraphQuery>,
+) -> Result<Json<MemoryGraphResponse>, StatusCode> {
+    let searches = state.memory_searches.load();
+    let memory_search = searches.get(&query.agent_id).ok_or(StatusCode::NOT_FOUND)?;
+    let store = memory_search.store();
+
+    let limit = query.limit.min(500);
+    let sort = parse_sort(&query.sort);
+    let memory_type = query.memory_type.as_deref().and_then(parse_memory_type);
+
+    let fetch_limit = limit + query.offset as i64;
+    let all = store.get_sorted(sort, fetch_limit, memory_type)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, agent_id = %query.agent_id, "failed to load graph nodes");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let total = all.len();
+    let nodes: Vec<Memory> = all.into_iter().skip(query.offset).collect();
+    let node_ids: Vec<String> = nodes.iter().map(|m| m.id.clone()).collect();
+
+    let edges = store.get_associations_between(&node_ids)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, agent_id = %query.agent_id, "failed to load graph edges");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(MemoryGraphResponse { nodes, edges, total }))
+}
+
+#[derive(Deserialize)]
+struct MemoryGraphNeighborsQuery {
+    agent_id: String,
+    memory_id: String,
+    #[serde(default = "default_neighbor_depth")]
+    depth: u32,
+    /// Comma-separated list of memory IDs the client already has.
+    #[serde(default)]
+    exclude: Option<String>,
+}
+
+fn default_neighbor_depth() -> u32 {
+    1
+}
+
+/// Get the neighbors of a specific memory node. Returns new nodes
+/// and edges not already present in the client's graph.
+async fn memory_graph_neighbors(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<MemoryGraphNeighborsQuery>,
+) -> Result<Json<MemoryGraphNeighborsResponse>, StatusCode> {
+    let searches = state.memory_searches.load();
+    let memory_search = searches.get(&query.agent_id).ok_or(StatusCode::NOT_FOUND)?;
+    let store = memory_search.store();
+
+    let depth = query.depth.min(3);
+    let exclude_ids: Vec<String> = query.exclude
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+
+    let (nodes, edges) = store.get_neighbors(&query.memory_id, depth, &exclude_ids)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, agent_id = %query.agent_id, memory_id = %query.memory_id, "failed to load neighbors");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(MemoryGraphNeighborsResponse { nodes, edges }))
 }
 
 // -- Cortex chat handlers --
