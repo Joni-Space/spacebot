@@ -9,8 +9,10 @@ pub async fn init_providers(config: &LlmConfig) -> Result<()> {
     // This module exists for any provider-specific setup that needs to happen
     // during system startup
     
-    if config.anthropic_key.is_some() {
-        tracing::info!("Anthropic provider configured");
+    if config.anthropic_oauth_token.is_some() {
+        tracing::info!("Anthropic provider configured (Claude Max OAuth token)");
+    } else if config.anthropic_key.is_some() {
+        tracing::info!("Anthropic provider configured (API key)");
     }
     
     if config.openai_key.is_some() {

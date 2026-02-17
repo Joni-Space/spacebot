@@ -9,6 +9,7 @@ use std::sync::Arc;
 #[derive(Serialize)]
 pub(super) struct ProviderStatus {
     anthropic: bool,
+    anthropic_oauth: bool,
     openai: bool,
     openrouter: bool,
     zhipu: bool,
@@ -44,7 +45,7 @@ pub(super) async fn get_providers(
 ) -> Result<Json<ProvidersResponse>, StatusCode> {
     let config_path = state.config_path.read().await.clone();
 
-    let (anthropic, openai, openrouter, zhipu, groq, together, fireworks, deepseek, xai, mistral, opencode_zen) = if config_path.exists() {
+    let (anthropic, anthropic_oauth, openai, openrouter, zhipu, groq, together, fireworks, deepseek, xai, mistral, opencode_zen) = if config_path.exists() {
         let content = tokio::fs::read_to_string(&config_path)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -68,6 +69,7 @@ pub(super) async fn get_providers(
 
         (
             has_key("anthropic_key", "ANTHROPIC_API_KEY"),
+            has_key("anthropic_oauth_token", "ANTHROPIC_OAUTH_TOKEN"),
             has_key("openai_key", "OPENAI_API_KEY"),
             has_key("openrouter_key", "OPENROUTER_API_KEY"),
             has_key("zhipu_key", "ZHIPU_API_KEY"),
@@ -82,6 +84,7 @@ pub(super) async fn get_providers(
     } else {
         (
             std::env::var("ANTHROPIC_API_KEY").is_ok(),
+            std::env::var("ANTHROPIC_OAUTH_TOKEN").is_ok(),
             std::env::var("OPENAI_API_KEY").is_ok(),
             std::env::var("OPENROUTER_API_KEY").is_ok(),
             std::env::var("ZHIPU_API_KEY").is_ok(),
@@ -97,6 +100,7 @@ pub(super) async fn get_providers(
 
     let providers = ProviderStatus {
         anthropic,
+        anthropic_oauth,
         openai,
         openrouter,
         zhipu,
@@ -109,6 +113,7 @@ pub(super) async fn get_providers(
         opencode_zen,
     };
     let has_any = providers.anthropic
+        || providers.anthropic_oauth
         || providers.openai
         || providers.openrouter
         || providers.zhipu
@@ -129,6 +134,7 @@ pub(super) async fn update_provider(
 ) -> Result<Json<ProviderUpdateResponse>, StatusCode> {
     let key_name = match request.provider.as_str() {
         "anthropic" => "anthropic_key",
+        "anthropic-oauth" => "anthropic_oauth_token",
         "openai" => "openai_key",
         "openrouter" => "openrouter_key",
         "zhipu" => "zhipu_key",
@@ -197,7 +203,8 @@ pub(super) async fn update_provider(
         };
 
         let has_key_for_current = match current_provider {
-            "anthropic" => has_provider_key("anthropic_key", "ANTHROPIC_API_KEY"),
+            "anthropic" => has_provider_key("anthropic_key", "ANTHROPIC_API_KEY")
+                || has_provider_key("anthropic_oauth_token", "ANTHROPIC_OAUTH_TOKEN"),
             "openai" => has_provider_key("openai_key", "OPENAI_API_KEY"),
             "openrouter" => has_provider_key("openrouter_key", "OPENROUTER_API_KEY"),
             "zhipu" => has_provider_key("zhipu_key", "ZHIPU_API_KEY"),
@@ -263,6 +270,7 @@ pub(super) async fn delete_provider(
 ) -> Result<Json<ProviderUpdateResponse>, StatusCode> {
     let key_name = match provider.as_str() {
         "anthropic" => "anthropic_key",
+        "anthropic-oauth" => "anthropic_oauth_token",
         "openai" => "openai_key",
         "openrouter" => "openrouter_key",
         "zhipu" => "zhipu_key",
