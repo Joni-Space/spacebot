@@ -219,10 +219,24 @@ impl CompletionModel for SpacebotModel {
                         // No fallbacks — this is the final error
                         return Err(error);
                     }
-                    tracing::warn!(
-                        model = %self.full_model_name,
-                        "primary model exhausted retries, trying fallbacks"
-                    );
+                    let error_str = error.to_string();
+                    let is_retriable = routing::is_retriable_error(&error_str);
+                    if is_retriable {
+                        tracing::warn!(
+                            model = %self.full_model_name,
+                            "primary model exhausted retries (retriable errors), trying fallbacks"
+                        );
+                    } else {
+                        // Non-retriable errors (400 bad request, auth failures, etc.)
+                        // falling through to fallbacks is intentional for availability,
+                        // but this should be investigated — it likely indicates a config issue.
+                        tracing::error!(
+                            model = %self.full_model_name,
+                            error = %error_str,
+                            "PRIMARY MODEL FAILED with non-retriable error — falling back to secondary model. \
+                             This likely indicates a configuration issue (wrong model ID, invalid parameters, etc.)"
+                        );
+                    }
                     last_error = Some(error);
                 }
             }
@@ -309,10 +323,17 @@ impl SpacebotModel {
 
         let messages = convert_messages_to_anthropic(&request.chat_history);
 
+        let is_thinking_model = model_supports_thinking(&self.model_name);
+
+        // Thinking-capable models (Opus 4+, Sonnet 4.5+) need a higher max_tokens
+        // because adaptive thinking uses part of the token budget for internal reasoning.
+        // 16384 gives ample room for both thinking and visible output.
+        let default_max_tokens = if is_thinking_model { 16384 } else { 8192 };
+
         let mut body = serde_json::json!({
             "model": self.model_name,
             "messages": messages,
-            "max_tokens": request.max_tokens.unwrap_or(8192),
+            "max_tokens": request.max_tokens.unwrap_or(default_max_tokens),
         });
 
         if let Some(preamble) = &request.preamble {
@@ -323,14 +344,24 @@ impl SpacebotModel {
             body["temperature"] = serde_json::json!(temperature);
         }
 
-        // Disable adaptive/extended thinking for models that support it.
-        // Without this, thinking-capable models (Opus 4+, Sonnet 4.5+) may produce
-        // thinking blocks that complicate multi-turn conversations — rig's message
-        // types don't carry thinking blocks, so they'd be lost on the next turn.
-        // Requires API version 2025-04-14 or later.
-        // TODO: Enable adaptive thinking properly (preserve thinking blocks in multi-turn).
-        if model_supports_thinking(&self.model_name) {
-            body["thinking"] = serde_json::json!({"type": "disabled"});
+        // Enable adaptive thinking for models that support it.
+        // Adaptive thinking is what makes Opus 4.6 qualitatively different from Sonnet —
+        // the model decides when to think, producing higher-quality responses.
+        // Thinking blocks in responses are skipped during parsing (rig's message types
+        // don't carry them), but each turn gets fresh thinking so this is fine.
+        //
+        // Note: When thinking is adaptive/enabled, temperature must be 1 or unset.
+        // We strip any explicit temperature to avoid API errors.
+        if is_thinking_model {
+            body["thinking"] = serde_json::json!({"type": "adaptive"});
+            // Anthropic requires temperature = 1 (or unset) when thinking is active
+            if body.get("temperature").is_some() {
+                tracing::debug!(
+                    model = %self.model_name,
+                    "stripping temperature for thinking-capable model (must be 1 or unset)"
+                );
+                body.as_object_mut().unwrap().remove("temperature");
+            }
         }
 
         if !request.tools.is_empty() {
@@ -352,7 +383,7 @@ impl SpacebotModel {
             .llm_manager
             .http_client()
             .post("https://api.anthropic.com/v1/messages")
-            .header("anthropic-version", "2025-04-14")
+            .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json");
 
         let is_oauth = matches!(&auth, super::manager::AnthropicAuth::OAuthToken(_));
@@ -938,16 +969,24 @@ fn normalize_ollama_base_url(configured: Option<String>) -> String {
 
 /// Check if a model supports the thinking/extended-thinking feature.
 ///
-/// These models have adaptive thinking by default and require explicit
-/// `thinking` configuration in the API request (API version 2025-04-14+).
-/// Without it, they may produce thinking-only responses that can't be
-/// represented in rig's message types.
+/// These models have adaptive thinking by default. When used without an explicit
+/// `thinking` configuration, they may produce thinking-only responses. We set
+/// `thinking: adaptive` for these models so they can use their full capabilities.
+///
+/// Models that support thinking:
+/// - Claude Opus 4+ (4.0, 4.1, 4.5, 4.6)
+/// - Claude Sonnet 4.5+
+/// - Claude Haiku 4.5+
+///
+/// Models that do NOT support thinking:
+/// - Claude Sonnet 4.0 (claude-sonnet-4-20250514)
+/// - Claude 3.x models
 fn model_supports_thinking(model_name: &str) -> bool {
-    // Claude Opus 4+ (including 4.6) and Claude Sonnet 4.5+ support thinking.
-    // Claude Sonnet 4 (non-.5) and Claude Haiku do NOT.
     model_name.starts_with("claude-opus-4")
         || model_name.starts_with("claude-sonnet-4-5")
         || model_name.starts_with("claude-sonnet-4.5")
+        || model_name.starts_with("claude-haiku-4-5")
+        || model_name.starts_with("claude-haiku-4.5")
 }
 
 fn tool_result_content_to_string(content: &OneOrMany<rig::message::ToolResultContent>) -> String {
@@ -1210,9 +1249,15 @@ fn parse_anthropic_response(
                 assistant_content
                     .push(AssistantContent::ToolCall(make_tool_call(id, name, arguments)));
             }
-            Some("thinking") => {
-                // Opus 4.6 adaptive thinking blocks — skip gracefully
-                tracing::debug!("skipping thinking block in Anthropic response");
+            Some("thinking") | Some("redacted_thinking") => {
+                // Adaptive thinking blocks from Opus 4+/Sonnet 4.5+ — skip gracefully.
+                // These contain the model's internal reasoning and don't need to be
+                // surfaced to the user. The text/tool_use blocks that follow contain
+                // the actual response.
+                tracing::debug!(
+                    block_type = block["type"].as_str().unwrap_or(""),
+                    "skipping thinking block in Anthropic response"
+                );
             }
             Some(other) => {
                 tracing::warn!("unknown content block type in Anthropic response: {}", other);
