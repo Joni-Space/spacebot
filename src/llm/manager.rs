@@ -17,6 +17,15 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
 
+/// Anthropic authentication method.
+#[derive(Debug, Clone)]
+pub enum AnthropicAuth {
+    /// Standard API key (`x-api-key` header).
+    ApiKey(String),
+    /// Claude Max OAuth token (`Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20`).
+    OAuthToken(String),
+}
+
 /// Manages LLM provider clients and tracks rate limit state.
 pub struct LlmManager {
     config: ArcSwap<LlmConfig>,
@@ -71,6 +80,21 @@ impl LlmManager {
     /// Get configured Ollama base URL, if provided.
     pub fn ollama_base_url(&self) -> Option<String> {
         self.config.load().ollama_base_url.clone()
+    }
+
+    /// Resolve Anthropic authentication — prefers OAuth token over API key.
+    pub fn get_anthropic_auth(&self) -> Result<AnthropicAuth> {
+        if let Some(token) = &self.config.anthropic_oauth_token {
+            if !token.is_empty() {
+                return Ok(AnthropicAuth::OAuthToken(token.clone()));
+            }
+        }
+        if let Some(key) = &self.config.anthropic_key {
+            if !key.is_empty() {
+                return Ok(AnthropicAuth::ApiKey(key.clone()));
+            }
+        }
+        Err(LlmError::MissingProviderKey("anthropic".into()).into())
     }
 
     /// Get the HTTP client.

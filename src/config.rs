@@ -134,6 +134,7 @@ pub struct ProviderConfig {
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
     pub anthropic_key: Option<String>,
+    pub anthropic_oauth_token: Option<String>,
     pub openai_key: Option<String>,
     pub openrouter_key: Option<String>,
     pub zhipu_key: Option<String>,
@@ -157,6 +158,7 @@ impl LlmConfig {
     /// Check if any provider configuration is set.
     pub fn has_any_key(&self) -> bool {
         self.anthropic_key.is_some()
+            || self.anthropic_oauth_token.is_some()
             || self.openai_key.is_some()
             || self.openrouter_key.is_some()
             || self.zhipu_key.is_some()
@@ -1125,6 +1127,7 @@ struct TomlLlmConfigFields {
 #[derive(Default)]
 struct TomlLlmConfig {
     anthropic_key: Option<String>,
+    anthropic_oauth_token: Option<String>,
     openai_key: Option<String>,
     openrouter_key: Option<String>,
     zhipu_key: Option<String>,
@@ -1582,6 +1585,7 @@ impl Config {
     pub fn load_from_env(instance_dir: &Path) -> Result<Self> {
         let mut llm = LlmConfig {
             anthropic_key: std::env::var("ANTHROPIC_API_KEY").ok(),
+            anthropic_oauth_token: std::env::var("ANTHROPIC_OAUTH_TOKEN").ok(),
             openai_key: std::env::var("OPENAI_API_KEY").ok(),
             openrouter_key: std::env::var("OPENROUTER_API_KEY").ok(),
             zhipu_key: std::env::var("ZHIPU_API_KEY").ok(),
@@ -1609,6 +1613,20 @@ impl Config {
                     api_type: ApiType::Anthropic,
                     base_url: ANTHROPIC_PROVIDER_BASE_URL.to_string(),
                     api_key: anthropic_key,
+                    name: None,
+                });
+        }
+
+        // Register anthropic provider when only OAuth token is set (no API key).
+        // Auth is handled by get_anthropic_auth(), but the provider entry must
+        // exist for get_provider("anthropic") to succeed during model routing.
+        if llm.anthropic_oauth_token.is_some() {
+            llm.providers
+                .entry("anthropic".to_string())
+                .or_insert_with(|| ProviderConfig {
+                    api_type: ApiType::Anthropic,
+                    base_url: ANTHROPIC_PROVIDER_BASE_URL.to_string(),
+                    api_key: String::new(), // Auth handled by get_anthropic_auth()
                     name: None,
                 });
         }
@@ -1788,6 +1806,12 @@ impl Config {
                 .as_deref()
                 .and_then(resolve_env_value)
                 .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok()),
+            anthropic_oauth_token: toml
+                .llm
+                .anthropic_oauth_token
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("ANTHROPIC_OAUTH_TOKEN").ok()),
             openai_key: toml
                 .llm
                 .openai_key
@@ -1910,6 +1934,21 @@ impl Config {
                     api_type: ApiType::Anthropic,
                     base_url: ANTHROPIC_PROVIDER_BASE_URL.to_string(),
                     api_key: anthropic_key,
+                    name: None,
+                });
+        }
+
+        // Also register anthropic provider when only OAuth token is configured
+        // (no API key). The actual auth uses get_anthropic_auth() which checks
+        // the OAuth token directly, but the provider entry must exist for
+        // get_provider("anthropic") to succeed during model routing.
+        if llm.anthropic_oauth_token.is_some() {
+            llm.providers
+                .entry("anthropic".to_string())
+                .or_insert_with(|| ProviderConfig {
+                    api_type: ApiType::Anthropic,
+                    base_url: ANTHROPIC_PROVIDER_BASE_URL.to_string(),
+                    api_key: String::new(), // Auth handled by get_anthropic_auth()
                     name: None,
                 });
         }

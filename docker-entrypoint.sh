@@ -13,6 +13,7 @@ bind = "::"
 
 [llm]
 anthropic_key = "env:ANTHROPIC_API_KEY"
+anthropic_oauth_token = "env:ANTHROPIC_OAUTH_TOKEN"
 openai_key = "env:OPENAI_API_KEY"
 openrouter_key = "env:OPENROUTER_API_KEY"
 EOF
