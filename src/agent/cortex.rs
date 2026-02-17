@@ -461,7 +461,7 @@ pub async fn generate_bulletin(deps: &AgentDeps, logger: &CortexLogger) -> bool 
         .expect("failed to render cortex bulletin prompt");
 
     let routing = deps.runtime_config.routing.load();
-    let model_name = routing.resolve(ProcessType::Branch, None).to_string();
+    let model_name = routing.resolve(ProcessType::Cortex, None).to_string();
     let model =
         SpacebotModel::make(&deps.llm_manager, &model_name).with_routing((**routing).clone());
 
@@ -476,6 +476,30 @@ pub async fn generate_bulletin(deps: &AgentDeps, logger: &CortexLogger) -> bool 
         Ok(bulletin) => {
             let word_count = bulletin.split_whitespace().count();
             let duration_ms = started.elapsed().as_millis() as u64;
+
+            // Guard against thinking-only responses: when the model uses adaptive
+            // thinking but produces no visible text, the prompt returns an empty
+            // or near-empty string. Don't overwrite a good bulletin with nothing.
+            if word_count < 5 {
+                tracing::warn!(
+                    words = word_count,
+                    duration_ms,
+                    model = %model_name,
+                    "cortex bulletin synthesis returned near-empty response (likely thinking-only), keeping previous bulletin"
+                );
+                logger.log(
+                    "bulletin_failed",
+                    &format!("Bulletin synthesis returned near-empty response ({word_count} words, {duration_ms}ms) — possible thinking-only response"),
+                    Some(serde_json::json!({
+                        "word_count": word_count,
+                        "duration_ms": duration_ms,
+                        "model": model_name,
+                        "thinking_only": true,
+                    })),
+                );
+                return false;
+            }
+
             tracing::info!(
                 words = word_count,
                 bulletin = %bulletin,
@@ -620,7 +644,7 @@ async fn generate_profile(deps: &AgentDeps, logger: &CortexLogger) {
     };
 
     let routing = deps.runtime_config.routing.load();
-    let model_name = routing.resolve(ProcessType::Branch, None).to_string();
+    let model_name = routing.resolve(ProcessType::Cortex, None).to_string();
     let model =
         SpacebotModel::make(&deps.llm_manager, &model_name).with_routing((**routing).clone());
 
