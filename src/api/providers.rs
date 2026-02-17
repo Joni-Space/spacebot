@@ -12,6 +12,7 @@ use std::sync::Arc;
 #[derive(Serialize)]
 pub(super) struct ProviderStatus {
     anthropic: bool,
+    anthropic_oauth: bool,
     openai: bool,
     openrouter: bool,
     zhipu: bool,
@@ -67,6 +68,7 @@ pub(super) struct ProviderModelTestResponse {
 fn provider_toml_key(provider: &str) -> Option<&'static str> {
     match provider {
         "anthropic" => Some("anthropic_key"),
+        "anthropic-oauth" => Some("anthropic_oauth_token"),
         "openai" => Some("openai_key"),
         "openrouter" => Some("openrouter_key"),
         "zhipu" => Some("zhipu_key"),
@@ -221,6 +223,7 @@ pub(super) async fn get_providers(
 
     let (
         anthropic,
+        anthropic_oauth,
         openai,
         openrouter,
         zhipu,
@@ -260,6 +263,7 @@ pub(super) async fn get_providers(
 
         (
             has_value("anthropic_key", "ANTHROPIC_API_KEY"),
+            has_value("anthropic_oauth_token", "ANTHROPIC_OAUTH_TOKEN"),
             has_value("openai_key", "OPENAI_API_KEY"),
             has_value("openrouter_key", "OPENROUTER_API_KEY"),
             has_value("zhipu_key", "ZHIPU_API_KEY"),
@@ -280,6 +284,7 @@ pub(super) async fn get_providers(
     } else {
         (
             std::env::var("ANTHROPIC_API_KEY").is_ok(),
+            std::env::var("ANTHROPIC_OAUTH_TOKEN").is_ok(),
             std::env::var("OPENAI_API_KEY").is_ok(),
             std::env::var("OPENROUTER_API_KEY").is_ok(),
             std::env::var("ZHIPU_API_KEY").is_ok(),
@@ -300,6 +305,7 @@ pub(super) async fn get_providers(
 
     let providers = ProviderStatus {
         anthropic,
+        anthropic_oauth,
         openai,
         openrouter,
         zhipu,
@@ -317,6 +323,7 @@ pub(super) async fn get_providers(
         zai_coding_plan,
     };
     let has_any = providers.anthropic
+        || providers.anthropic_oauth
         || providers.openai
         || providers.openrouter
         || providers.zhipu
