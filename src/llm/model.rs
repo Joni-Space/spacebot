@@ -9,8 +9,8 @@ use rig::completion::{
     self, CompletionError, CompletionModel, CompletionRequest, GetTokenUsage,
 };
 use rig::message::{
-    AssistantContent, DocumentSourceKind, Image, Message, MimeType, Text, ToolCall, ToolFunction,
-    ToolResult, UserContent,
+    AssistantContent, DocumentSourceKind, Image, Message, MimeType, Reasoning, Text, ToolCall,
+    ToolFunction, ToolResult, UserContent,
 };
 use rig::one_or_many::OneOrMany;
 use rig::streaming::StreamingCompletionResponse;
@@ -320,8 +320,9 @@ impl SpacebotModel {
         // Enable adaptive thinking for models that support it.
         // Adaptive thinking is what makes Opus 4.6 qualitatively different from Sonnet —
         // the model decides when to think, producing higher-quality responses.
-        // Thinking blocks in responses are skipped during parsing (rig's message types
-        // don't carry them), but each turn gets fresh thinking so this is fine.
+        // Thinking blocks are preserved as Reasoning in conversation history and
+        // passed back to the API. This is required for tool-use continuations and
+        // the API auto-filters older thinking blocks from previous turns.
         //
         // Note: When thinking is adaptive/enabled, temperature must be 1 or unset.
         // We strip any explicit temperature to avoid API errors.
@@ -938,10 +939,19 @@ fn convert_messages_to_anthropic(messages: &OneOrMany<Message>) -> Vec<serde_jso
                 }
             }
             Message::Assistant { content, .. } => {
+                // Check if this message has real thinking/reasoning blocks
+                let has_reasoning = content.iter().any(|c| matches!(c, AssistantContent::Reasoning(_)));
+
                 let parts: Vec<serde_json::Value> = content
                     .iter()
                     .filter_map(|c| match c {
                         AssistantContent::Text(t) if !t.text.is_empty() => {
+                            // Skip the "[thinking]" placeholder if we have real
+                            // reasoning blocks — the placeholder was only needed
+                            // for display; the API should see the actual thinking.
+                            if has_reasoning && t.text == "[thinking]" {
+                                return None;
+                            }
                             Some(serde_json::json!({"type": "text", "text": t.text}))
                         }
                         AssistantContent::Text(_) => None, // Skip empty text blocks
@@ -951,15 +961,34 @@ fn convert_messages_to_anthropic(messages: &OneOrMany<Message>) -> Vec<serde_jso
                             "name": tc.function.name,
                             "input": tc.function.arguments,
                         })),
+                        AssistantContent::Reasoning(reasoning) => {
+                            // Convert reasoning blocks back to Anthropic's format.
+                            // This is required for tool-use continuations and
+                            // recommended for multi-turn conversations.
+                            if reasoning.id.as_deref() == Some("redacted_thinking") {
+                                // Redacted thinking must be passed back as-is
+                                Some(serde_json::json!({
+                                    "type": "redacted_thinking",
+                                    "data": reasoning.reasoning.first().cloned().unwrap_or_default(),
+                                }))
+                            } else {
+                                let mut block = serde_json::json!({
+                                    "type": "thinking",
+                                    "thinking": reasoning.reasoning.first().cloned().unwrap_or_default(),
+                                });
+                                if let Some(sig) = &reasoning.signature {
+                                    block["signature"] = serde_json::json!(sig);
+                                }
+                                Some(block)
+                            }
+                        }
                         _ => None,
                     })
                     .collect();
                 if parts.is_empty() {
                     // Don't skip assistant messages entirely — this breaks the
                     // user/assistant alternation pattern that Anthropic requires.
-                    // Instead, insert a minimal text block. This can happen when
-                    // a thinking-only response (adaptive thinking with no visible
-                    // output) ends up in conversation history.
+                    // Insert a minimal text block as fallback.
                     Some(serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "[thinking]"}]}))
                 } else {
                     Some(serde_json::json!({"role": "assistant", "content": parts}))
@@ -1162,15 +1191,38 @@ fn parse_anthropic_response(
                 assistant_content
                     .push(AssistantContent::ToolCall(make_tool_call(id, name, arguments)));
             }
-            Some("thinking") | Some("redacted_thinking") => {
-                // Adaptive thinking blocks from Opus 4+/Sonnet 4.5+ — skip gracefully.
-                // These contain the model's internal reasoning and don't need to be
-                // surfaced to the user. The text/tool_use blocks that follow contain
-                // the actual response.
+            Some("thinking") => {
+                // Adaptive thinking blocks from Opus 4+/Sonnet 4.5+.
+                // Preserve these in conversation history so they can be passed back
+                // to the API. This is REQUIRED for tool-use continuations (the API
+                // rejects requests missing thinking blocks from the last assistant
+                // turn) and recommended for multi-turn conversations (the API will
+                // auto-filter older thinking blocks and only bill for relevant ones).
+                let thinking_text = block["thinking"].as_str().unwrap_or("").to_string();
+                let signature = block["signature"].as_str().map(|s| s.to_string());
                 tracing::debug!(
-                    block_type = block["type"].as_str().unwrap_or(""),
-                    "skipping thinking block in Anthropic response"
+                    thinking_len = thinking_text.len(),
+                    has_signature = signature.is_some(),
+                    "preserving thinking block in conversation history"
                 );
+                assistant_content.push(AssistantContent::Reasoning(
+                    Reasoning::new(&thinking_text).with_signature(signature),
+                ));
+            }
+            Some("redacted_thinking") => {
+                // Redacted thinking blocks contain encrypted reasoning that must be
+                // passed back to the API exactly as received. We use id="redacted_thinking"
+                // as a marker so convert_messages_to_anthropic() can reconstruct the
+                // correct JSON format ({"type": "redacted_thinking", "data": "..."}).
+                let data = block["data"].as_str().unwrap_or("").to_string();
+                tracing::debug!(
+                    data_len = data.len(),
+                    "preserving redacted_thinking block in conversation history"
+                );
+                assistant_content.push(AssistantContent::Reasoning(
+                    Reasoning::new(&data)
+                        .with_id("redacted_thinking".to_string()),
+                ));
             }
             Some(other) => {
                 tracing::warn!("unknown content block type in Anthropic response: {}", other);
@@ -1179,33 +1231,41 @@ fn parse_anthropic_response(
         }
     }
 
-    if assistant_content.is_empty() {
+    // Check if we have any "visible" content (text or tool_use). Reasoning blocks
+    // alone aren't sufficient — rig needs at least one Text/ToolCall, and we need
+    // something to display to the user.
+    let has_visible_content = assistant_content.iter().any(|c| {
+        matches!(c, AssistantContent::Text(_) | AssistantContent::ToolCall(_))
+    });
+
+    if !has_visible_content {
         let block_types: Vec<&str> = content_blocks
             .iter()
             .filter_map(|b| b["type"].as_str())
             .collect();
         let stop_reason = body["stop_reason"].as_str().unwrap_or("");
         let has_thinking = block_types.iter().any(|&t| t == "thinking");
+        let has_reasoning = assistant_content.iter().any(|c| matches!(c, AssistantContent::Reasoning(_)));
 
-        if stop_reason == "end_turn" || has_thinking || content_blocks.is_empty() {
-            // Valid empty-content cases:
+        if stop_reason == "end_turn" || has_thinking || has_reasoning || content_blocks.is_empty() {
+            // Valid cases where there's no visible text:
             // - end_turn with no text/tool_use (model chose not to respond)
             // - Response contained only thinking blocks (adaptive thinking with no visible output)
             // - Completely empty content array
             //
-            // We use a non-whitespace placeholder because Anthropic's API rejects
-            // messages with whitespace-only text content blocks ("text content
-            // blocks must contain non-whitespace text"). When this response is
-            // stored in conversation history and sent back in subsequent turns,
-            // an empty or whitespace-only string causes a 400 error.
+            // We add a placeholder text because:
+            // 1. Anthropic's API rejects whitespace-only text content blocks
+            // 2. The Discord bot needs something to display to the user
+            // Note: The actual thinking content is preserved in Reasoning blocks above.
             tracing::debug!(
                 block_types = ?block_types,
                 stop_reason,
-                "Anthropic response had no text/tool_use blocks, returning placeholder text"
+                has_reasoning,
+                "Anthropic response had no visible text/tool_use, adding placeholder"
             );
             assistant_content.push(AssistantContent::Text(Text { text: "[thinking]".to_string() }));
-        } else {
-            // Unexpected empty content — log for debugging
+        } else if assistant_content.is_empty() {
+            // Unexpected empty content — no thinking blocks either
             let full_body_str = serde_json::to_string_pretty(&body).unwrap_or_default();
             let truncated_body = if full_body_str.len() > 2000 {
                 format!("{}... [truncated, {} bytes total]", &full_body_str[..2000], full_body_str.len())
