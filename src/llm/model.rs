@@ -955,7 +955,12 @@ fn convert_messages_to_anthropic(messages: &OneOrMany<Message>) -> Vec<serde_jso
                     })
                     .collect();
                 if parts.is_empty() {
-                    None // Skip messages with no content (e.g. tool-only replies)
+                    // Don't skip assistant messages entirely — this breaks the
+                    // user/assistant alternation pattern that Anthropic requires.
+                    // Instead, insert a minimal text block. This can happen when
+                    // a thinking-only response (adaptive thinking with no visible
+                    // output) ends up in conversation history.
+                    Some(serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": " "}]}))
                 } else {
                     Some(serde_json::json!({"role": "assistant", "content": parts}))
                 }
@@ -1187,12 +1192,19 @@ fn parse_anthropic_response(
             // - end_turn with no text/tool_use (model chose not to respond)
             // - Response contained only thinking blocks (adaptive thinking with no visible output)
             // - Completely empty content array
+            //
+            // We use a single space instead of an empty string because Anthropic's
+            // API rejects messages with empty text content blocks ("text content
+            // blocks must be non-empty"). When this response is stored in
+            // conversation history and sent back in subsequent turns, an empty
+            // string gets filtered out, which can break message alternation or
+            // cause the API to reject the entire request.
             tracing::debug!(
                 block_types = ?block_types,
                 stop_reason,
-                "Anthropic response had no text/tool_use blocks, returning empty text"
+                "Anthropic response had no text/tool_use blocks, returning placeholder text"
             );
-            assistant_content.push(AssistantContent::Text(Text { text: String::new() }));
+            assistant_content.push(AssistantContent::Text(Text { text: " ".to_string() }));
         } else {
             // Unexpected empty content — log for debugging
             let full_body_str = serde_json::to_string_pretty(&body).unwrap_or_default();
