@@ -275,9 +275,9 @@ impl SpacebotModel {
         &self,
         request: CompletionRequest,
     ) -> Result<completion::CompletionResponse<RawResponse>, CompletionError> {
-        let api_key = self
+        let auth = self
             .llm_manager
-            .get_api_key("anthropic")
+            .get_anthropic_auth()
             .map_err(|e| CompletionError::ProviderError(e.to_string()))?;
 
         let messages = convert_messages_to_anthropic(&request.chat_history);
@@ -311,13 +311,27 @@ impl SpacebotModel {
             body["tools"] = serde_json::json!(tools);
         }
 
-        let response = self
+        let mut req = self
             .llm_manager
             .http_client()
             .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+
+        let is_oauth = matches!(&auth, super::manager::AnthropicAuth::OAuthToken(_));
+
+        match &auth {
+            super::manager::AnthropicAuth::ApiKey(key) => {
+                req = req.header("x-api-key", key);
+            }
+            super::manager::AnthropicAuth::OAuthToken(token) => {
+                req = req
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("anthropic-beta", "oauth-2025-04-20");
+            }
+        }
+
+        let response = req
             .json(&body)
             .send()
             .await
@@ -338,6 +352,15 @@ impl SpacebotModel {
             let message = response_body["error"]["message"]
                 .as_str()
                 .unwrap_or("unknown error");
+
+            // Provide a clear message for expired OAuth tokens
+            if is_oauth && status.as_u16() == 401 {
+                return Err(CompletionError::ProviderError(format!(
+                    "Anthropic OAuth token expired or invalid ({status}): {message}. \
+                     Please run `claude setup-token` again to refresh your Claude Max token."
+                )));
+            }
+
             return Err(CompletionError::ProviderError(format!(
                 "Anthropic API error ({status}): {message}"
             )));

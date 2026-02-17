@@ -5,3 +5,8 @@
 # Interface
 interface/node_modules/
 interface/dist/
+.env
+*.env
+nenebot-identity/
+nenebot-config.toml
+CLAUDE_MAX_OAUTH_SPEC.md
