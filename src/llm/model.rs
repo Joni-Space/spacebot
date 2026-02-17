@@ -213,10 +213,24 @@ impl CompletionModel for SpacebotModel {
                         // No fallbacks — this is the final error
                         return Err(error);
                     }
-                    tracing::warn!(
-                        model = %self.full_model_name,
-                        "primary model exhausted retries, trying fallbacks"
-                    );
+                    let error_str = error.to_string();
+                    let is_retriable = routing::is_retriable_error(&error_str);
+                    if is_retriable {
+                        tracing::warn!(
+                            model = %self.full_model_name,
+                            "primary model exhausted retries (retriable errors), trying fallbacks"
+                        );
+                    } else {
+                        // Non-retriable errors (400 bad request, auth failures, etc.)
+                        // falling through to fallbacks is intentional for availability,
+                        // but this should be investigated — it likely indicates a config issue.
+                        tracing::error!(
+                            model = %self.full_model_name,
+                            error = %error_str,
+                            "PRIMARY MODEL FAILED with non-retriable error — falling back to secondary model. \
+                             This likely indicates a configuration issue (wrong model ID, invalid parameters, etc.)"
+                        );
+                    }
                     last_error = Some(error);
                 }
             }
@@ -282,10 +296,17 @@ impl SpacebotModel {
 
         let messages = convert_messages_to_anthropic(&request.chat_history);
 
+        let is_thinking_model = model_supports_thinking(&self.model_name);
+
+        // Thinking-capable models (Opus 4+, Sonnet 4.5+) need a higher max_tokens
+        // because adaptive thinking uses part of the token budget for internal reasoning.
+        // 16384 gives ample room for both thinking and visible output.
+        let default_max_tokens = if is_thinking_model { 16384 } else { 8192 };
+
         let mut body = serde_json::json!({
             "model": self.model_name,
             "messages": messages,
-            "max_tokens": request.max_tokens.unwrap_or(4096),
+            "max_tokens": request.max_tokens.unwrap_or(default_max_tokens),
         });
 
         if let Some(preamble) = &request.preamble {
@@ -294,6 +315,26 @@ impl SpacebotModel {
 
         if let Some(temperature) = request.temperature {
             body["temperature"] = serde_json::json!(temperature);
+        }
+
+        // Enable adaptive thinking for models that support it.
+        // Adaptive thinking is what makes Opus 4.6 qualitatively different from Sonnet —
+        // the model decides when to think, producing higher-quality responses.
+        // Thinking blocks in responses are skipped during parsing (rig's message types
+        // don't carry them), but each turn gets fresh thinking so this is fine.
+        //
+        // Note: When thinking is adaptive/enabled, temperature must be 1 or unset.
+        // We strip any explicit temperature to avoid API errors.
+        if is_thinking_model {
+            body["thinking"] = serde_json::json!({"type": "adaptive"});
+            // Anthropic requires temperature = 1 (or unset) when thinking is active
+            if body.get("temperature").is_some() {
+                tracing::debug!(
+                    model = %self.model_name,
+                    "stripping temperature for thinking-capable model (must be 1 or unset)"
+                );
+                body.as_object_mut().unwrap().remove("temperature");
+            }
         }
 
         if !request.tools.is_empty() {
@@ -331,6 +372,26 @@ impl SpacebotModel {
             }
         }
 
+        // Log the messages being sent (for debugging tool result formatting)
+        let has_tool_results = messages.iter().any(|m| {
+            m["content"].as_array().map_or(false, |parts| {
+                parts.iter().any(|p| p["type"].as_str() == Some("tool_result"))
+            })
+        });
+        if has_tool_results {
+            let msgs_str = serde_json::to_string_pretty(&messages).unwrap_or_default();
+            let truncated = if msgs_str.len() > 3000 {
+                format!("{}... [truncated, {} bytes]", &msgs_str[..3000], msgs_str.len())
+            } else {
+                msgs_str
+            };
+            tracing::info!(
+                model = %self.model_name,
+                "Anthropic request contains tool_result — dumping messages:\n{}",
+                truncated
+            );
+        }
+
         let response = req
             .json(&body)
             .send()
@@ -347,6 +408,16 @@ impl SpacebotModel {
             .map_err(|e| CompletionError::ProviderError(format!(
                 "Anthropic response ({status}) is not valid JSON: {e}\nBody: {}", truncate_body(&response_text)
             )))?;
+
+        // Log the model that was requested vs what Anthropic actually used
+        tracing::info!(
+            requested_model = %self.model_name,
+            response_model = %response_body["model"].as_str().unwrap_or("unknown"),
+            stop_reason = %response_body["stop_reason"].as_str().unwrap_or("unknown"),
+            input_tokens = response_body["usage"]["input_tokens"].as_u64().unwrap_or(0),
+            output_tokens = response_body["usage"]["output_tokens"].as_u64().unwrap_or(0),
+            "Anthropic API response"
+        );
 
         if !status.is_success() {
             let message = response_body["error"]["message"]
@@ -804,6 +875,28 @@ impl SpacebotModel {
 
 // --- Helpers ---
 
+/// Check if a model supports the thinking/extended-thinking feature.
+///
+/// These models have adaptive thinking by default. When used without an explicit
+/// `thinking` configuration, they may produce thinking-only responses. We set
+/// `thinking: adaptive` for these models so they can use their full capabilities.
+///
+/// Models that support thinking:
+/// - Claude Opus 4+ (4.0, 4.1, 4.5, 4.6)
+/// - Claude Sonnet 4.5+
+/// - Claude Haiku 4.5+
+///
+/// Models that do NOT support thinking:
+/// - Claude Sonnet 4.0 (claude-sonnet-4-20250514)
+/// - Claude 3.x models
+fn model_supports_thinking(model_name: &str) -> bool {
+    model_name.starts_with("claude-opus-4")
+        || model_name.starts_with("claude-sonnet-4-5")
+        || model_name.starts_with("claude-sonnet-4.5")
+        || model_name.starts_with("claude-haiku-4-5")
+        || model_name.starts_with("claude-haiku-4.5")
+}
+
 fn tool_result_content_to_string(content: &OneOrMany<rig::message::ToolResultContent>) -> String {
     content
         .iter()
@@ -820,14 +913,15 @@ fn tool_result_content_to_string(content: &OneOrMany<rig::message::ToolResultCon
 fn convert_messages_to_anthropic(messages: &OneOrMany<Message>) -> Vec<serde_json::Value> {
     messages
         .iter()
-        .map(|message| match message {
+        .filter_map(|message| match message {
             Message::User { content } => {
                 let parts: Vec<serde_json::Value> = content
                     .iter()
                     .filter_map(|c| match c {
-                        UserContent::Text(t) => {
+                        UserContent::Text(t) if !t.text.is_empty() => {
                             Some(serde_json::json!({"type": "text", "text": t.text}))
                         }
+                        UserContent::Text(_) => None, // Skip empty text blocks
                         UserContent::Image(image) => convert_image_anthropic(image),
                         UserContent::ToolResult(result) => Some(serde_json::json!({
                             "type": "tool_result",
@@ -837,15 +931,20 @@ fn convert_messages_to_anthropic(messages: &OneOrMany<Message>) -> Vec<serde_jso
                         _ => None,
                     })
                     .collect();
-                serde_json::json!({"role": "user", "content": parts})
+                if parts.is_empty() {
+                    None // Skip messages with no content
+                } else {
+                    Some(serde_json::json!({"role": "user", "content": parts}))
+                }
             }
             Message::Assistant { content, .. } => {
                 let parts: Vec<serde_json::Value> = content
                     .iter()
                     .filter_map(|c| match c {
-                        AssistantContent::Text(t) => {
+                        AssistantContent::Text(t) if !t.text.is_empty() => {
                             Some(serde_json::json!({"type": "text", "text": t.text}))
                         }
+                        AssistantContent::Text(_) => None, // Skip empty text blocks
                         AssistantContent::ToolCall(tc) => Some(serde_json::json!({
                             "type": "tool_use",
                             "id": tc.id,
@@ -855,7 +954,11 @@ fn convert_messages_to_anthropic(messages: &OneOrMany<Message>) -> Vec<serde_jso
                         _ => None,
                     })
                     .collect();
-                serde_json::json!({"role": "assistant", "content": parts})
+                if parts.is_empty() {
+                    None // Skip messages with no content (e.g. tool-only replies)
+                } else {
+                    Some(serde_json::json!({"role": "assistant", "content": parts}))
+                }
             }
         })
         .collect()
@@ -1054,7 +1157,56 @@ fn parse_anthropic_response(
                 assistant_content
                     .push(AssistantContent::ToolCall(make_tool_call(id, name, arguments)));
             }
+            Some("thinking") | Some("redacted_thinking") => {
+                // Adaptive thinking blocks from Opus 4+/Sonnet 4.5+ — skip gracefully.
+                // These contain the model's internal reasoning and don't need to be
+                // surfaced to the user. The text/tool_use blocks that follow contain
+                // the actual response.
+                tracing::debug!(
+                    block_type = block["type"].as_str().unwrap_or(""),
+                    "skipping thinking block in Anthropic response"
+                );
+            }
+            Some(other) => {
+                tracing::warn!("unknown content block type in Anthropic response: {}", other);
+            }
             _ => {}
+        }
+    }
+
+    if assistant_content.is_empty() {
+        let block_types: Vec<&str> = content_blocks
+            .iter()
+            .filter_map(|b| b["type"].as_str())
+            .collect();
+        let stop_reason = body["stop_reason"].as_str().unwrap_or("");
+        let has_thinking = block_types.iter().any(|&t| t == "thinking");
+
+        if stop_reason == "end_turn" || has_thinking || content_blocks.is_empty() {
+            // Valid empty-content cases:
+            // - end_turn with no text/tool_use (model chose not to respond)
+            // - Response contained only thinking blocks (adaptive thinking with no visible output)
+            // - Completely empty content array
+            tracing::debug!(
+                block_types = ?block_types,
+                stop_reason,
+                "Anthropic response had no text/tool_use blocks, returning empty text"
+            );
+            assistant_content.push(AssistantContent::Text(Text { text: String::new() }));
+        } else {
+            // Unexpected empty content — log for debugging
+            let full_body_str = serde_json::to_string_pretty(&body).unwrap_or_default();
+            let truncated_body = if full_body_str.len() > 2000 {
+                format!("{}... [truncated, {} bytes total]", &full_body_str[..2000], full_body_str.len())
+            } else {
+                full_body_str
+            };
+            tracing::warn!(
+                "Anthropic response had {} content blocks but none were text/tool_use. Block types: {:?}. Body:\n{}",
+                content_blocks.len(),
+                block_types,
+                truncated_body
+            );
         }
     }
 
