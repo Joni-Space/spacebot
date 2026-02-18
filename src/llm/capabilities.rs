@@ -11,7 +11,7 @@
 //!
 //! let caps = get_capabilities("claude-opus-4-6");
 //! assert!(matches!(caps.thinking, ThinkingSupport::Adaptive));
-//! assert_eq!(caps.max_output_tokens, 131_072);
+//! assert_eq!(caps.max_output_tokens, 128_000);
 //! ```
 
 /// How a model supports (or doesn't support) thinking/reasoning.
@@ -77,25 +77,25 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         prefix: "claude-opus-4-6",
         capabilities: ModelCapabilities {
-            max_output_tokens: 131_072,
+            max_output_tokens: 128_000,
             thinking: ThinkingSupport::Adaptive,
-            context_window: 1_000_000,
+            context_window: 200_000,
         },
     },
     // ── Sonnet 4.6 ──────────────────────────────────────────────────
     CatalogEntry {
         prefix: "claude-sonnet-4-6",
         capabilities: ModelCapabilities {
-            max_output_tokens: 65_536,
+            max_output_tokens: 64_000,
             thinking: ThinkingSupport::Adaptive,
-            context_window: 1_000_000,
+            context_window: 200_000,
         },
     },
     // ── Haiku 4.5 (correct date: 20251001) ──────────────────────────
     CatalogEntry {
         prefix: "claude-haiku-4-5",
         capabilities: ModelCapabilities {
-            max_output_tokens: 65_536,
+            max_output_tokens: 64_000,
             thinking: ThinkingSupport::Extended {
                 default_budget: 10_240,
             },
@@ -106,7 +106,7 @@ const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         prefix: "claude-haiku-4.5",
         capabilities: ModelCapabilities {
-            max_output_tokens: 65_536,
+            max_output_tokens: 64_000,
             thinking: ThinkingSupport::Extended {
                 default_budget: 10_240,
             },
@@ -171,7 +171,7 @@ const CATALOG: &[CatalogEntry] = &[
 /// # use spacebot::llm::capabilities::{get_capabilities, ThinkingSupport};
 /// // Direct model name
 /// let caps = get_capabilities("claude-opus-4-6");
-/// assert_eq!(caps.max_output_tokens, 131_072);
+/// assert_eq!(caps.max_output_tokens, 128_000);
 /// assert!(matches!(caps.thinking, ThinkingSupport::Adaptive));
 ///
 /// // With provider prefix
@@ -245,22 +245,22 @@ mod tests {
     #[test]
     fn opus_4_6_adaptive_thinking() {
         let caps = get_capabilities("claude-opus-4-6");
-        assert_eq!(caps.max_output_tokens, 131_072);
-        assert_eq!(caps.context_window, 1_000_000);
+        assert_eq!(caps.max_output_tokens, 128_000);
+        assert_eq!(caps.context_window, 200_000);
         assert!(matches!(caps.thinking, ThinkingSupport::Adaptive));
     }
 
     #[test]
     fn sonnet_4_6_adaptive_thinking() {
         let caps = get_capabilities("claude-sonnet-4-6");
-        assert_eq!(caps.max_output_tokens, 65_536);
+        assert_eq!(caps.max_output_tokens, 64_000);
         assert!(matches!(caps.thinking, ThinkingSupport::Adaptive));
     }
 
     #[test]
     fn haiku_4_5_extended_thinking() {
         let caps = get_capabilities("claude-haiku-4-5-20251001");
-        assert_eq!(caps.max_output_tokens, 65_536);
+        assert_eq!(caps.max_output_tokens, 64_000);
         assert!(matches!(
             caps.thinking,
             ThinkingSupport::Extended { default_budget: 10_240 }
