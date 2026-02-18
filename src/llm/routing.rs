@@ -39,10 +39,19 @@ impl Default for RoutingConfig {
                 "coding".into(),
                 "anthropic/claude-sonnet-4-6".into(),
             )]),
-            fallbacks: HashMap::from([(
-                "anthropic/claude-sonnet-4-6".into(),
-                vec!["anthropic/claude-haiku-4-5-20250514".into()],
-            )]),
+            fallbacks: HashMap::from([
+                (
+                    "anthropic/claude-opus-4-6".into(),
+                    vec![
+                        "anthropic/claude-sonnet-4-6".into(),
+                        "anthropic/claude-haiku-4-5-20250514".into(),
+                    ],
+                ),
+                (
+                    "anthropic/claude-sonnet-4-6".into(),
+                    vec!["anthropic/claude-haiku-4-5-20250514".into()],
+                ),
+            ]),
             rate_limit_cooldown_secs: 60,
         }
     }
