@@ -400,24 +400,26 @@ impl SpacebotModel {
             }
         }
 
-        // Log the messages being sent (for debugging tool result formatting)
+        // Log tool_result presence at debug level (full payload at trace only)
         let has_tool_results = messages.iter().any(|m| {
             m["content"].as_array().map_or(false, |parts| {
                 parts.iter().any(|p| p["type"].as_str() == Some("tool_result"))
             })
         });
         if has_tool_results {
-            let msgs_str = serde_json::to_string_pretty(&messages).unwrap_or_default();
-            let truncated = if msgs_str.len() > 3000 {
-                format!("{}... [truncated, {} bytes]", &msgs_str[..3000], msgs_str.len())
-            } else {
-                msgs_str
-            };
-            tracing::info!(
+            tracing::debug!(
                 model = %self.model_name,
-                "Anthropic request contains tool_result — dumping messages:\n{}",
-                truncated
+                message_count = messages.len(),
+                "Anthropic request contains tool_result blocks"
             );
+            if tracing::enabled!(tracing::Level::TRACE) {
+                let msgs_str = serde_json::to_string_pretty(&messages).unwrap_or_default();
+                tracing::trace!(
+                    model = %self.model_name,
+                    "Anthropic request messages:\n{}",
+                    msgs_str
+                );
+            }
         }
 
         let response = req
@@ -437,7 +439,7 @@ impl SpacebotModel {
                 "Anthropic response ({status}) is not valid JSON: {e}\nBody: {}", truncate_body(&response_text)
             )))?;
 
-        // Log the model that was requested vs what Anthropic actually used
+        // Log response metadata at info (never full payload)
         tracing::info!(
             requested_model = %self.model_name,
             response_model = %response_body["model"].as_str().unwrap_or("unknown"),
@@ -446,6 +448,11 @@ impl SpacebotModel {
             output_tokens = response_body["usage"]["output_tokens"].as_u64().unwrap_or(0),
             "Anthropic API response"
         );
+        // Full response body only at trace level
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let body_str = serde_json::to_string_pretty(&response_body).unwrap_or_default();
+            tracing::trace!("Anthropic full response:\n{}", body_str);
+        }
 
         if !status.is_success() {
             let message = response_body["error"]["message"]
@@ -986,6 +993,8 @@ fn model_supports_thinking(model_name: &str) -> bool {
     model_name.starts_with("claude-opus-4")
         || model_name.starts_with("claude-sonnet-4-5")
         || model_name.starts_with("claude-sonnet-4.5")
+        || model_name.starts_with("claude-sonnet-4-6")
+        || model_name.starts_with("claude-sonnet-4.6")
         || model_name.starts_with("claude-haiku-4-5")
         || model_name.starts_with("claude-haiku-4.5")
 }
@@ -1367,18 +1376,15 @@ fn parse_anthropic_response(
             }
         } else if assistant_content.is_empty() {
             // Unexpected empty content — no thinking blocks either
-            let full_body_str = serde_json::to_string_pretty(&body).unwrap_or_default();
-            let truncated_body = if full_body_str.len() > 2000 {
-                format!("{}... [truncated, {} bytes total]", &full_body_str[..2000], full_body_str.len())
-            } else {
-                full_body_str
-            };
             tracing::warn!(
-                "Anthropic response had {} content blocks but none were text/tool_use. Block types: {:?}. Body:\n{}",
-                content_blocks.len(),
-                block_types,
-                truncated_body
+                content_blocks = content_blocks.len(),
+                block_types = ?block_types,
+                "Anthropic response had no text/tool_use content blocks"
             );
+            if tracing::enabled!(tracing::Level::TRACE) {
+                let full_body_str = serde_json::to_string_pretty(&body).unwrap_or_default();
+                tracing::trace!("Anthropic empty-content response body:\n{}", full_body_str);
+            }
         }
     }
 

@@ -497,9 +497,15 @@ pub async fn generate_bulletin(deps: &AgentDeps, logger: &CortexLogger) -> bool 
 
             tracing::info!(
                 words = word_count,
-                bulletin = %bulletin,
+                duration_ms,
+                model = %model_name,
                 "cortex bulletin generated"
             );
+            tracing::debug!(
+                bulletin_preview = %crate::llm::truncate_for_log(&bulletin, 200),
+                "bulletin content preview"
+            );
+            tracing::trace!(bulletin = %bulletin, "full bulletin content");
             deps.runtime_config
                 .memory_bulletin
                 .store(Arc::new(bulletin));
