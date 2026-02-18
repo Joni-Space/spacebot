@@ -67,7 +67,26 @@ impl LlmManager {
     }
 
     /// Get the appropriate API key for a provider.
+    ///
+    /// For Anthropic, this also checks for an OAuth token — callers that only
+    /// need to know "is Anthropic configured?" should get a useful answer even
+    /// when using Claude Max OAuth auth instead of a traditional API key.
+    /// The actual Anthropic call path uses `get_anthropic_auth()` for proper
+    /// header selection, but this avoids false "missing key" errors elsewhere.
     pub fn get_api_key(&self, provider_id: &str) -> Result<String> {
+        // For anthropic, fall back to OAuth token if no API key
+        if provider_id == "anthropic" {
+            if let Ok(provider) = self.get_provider(provider_id) {
+                if !provider.api_key.is_empty() {
+                    return Ok(provider.api_key);
+                }
+            }
+            if let Some(token) = &self.config.anthropic_oauth_token {
+                return Ok(token.clone());
+            }
+            return Err(LlmError::MissingProviderKey(provider_id.to_string()).into());
+        }
+
         let provider = self.get_provider(provider_id)?;
 
         if provider.api_key.is_empty() {
