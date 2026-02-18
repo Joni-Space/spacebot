@@ -1,5 +1,6 @@
 //! LLM provider management and routing.
 
+pub mod capabilities;
 pub mod manager;
 pub mod model;
 pub mod providers;

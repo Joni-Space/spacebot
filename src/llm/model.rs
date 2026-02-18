@@ -1,5 +1,6 @@
 //! SpacebotModel: Custom CompletionModel implementation that routes through LlmManager.
 
+use crate::llm::capabilities::{self, ThinkingSupport};
 use crate::llm::manager::LlmManager;
 use crate::llm::routing::{
     self, RoutingConfig, MAX_FALLBACK_ATTEMPTS, MAX_RETRIES_PER_MODEL, RETRY_BASE_DELAY_MS,
@@ -323,12 +324,9 @@ impl SpacebotModel {
 
         let messages = convert_messages_to_anthropic(&request.chat_history);
 
-        let is_thinking_model = model_supports_thinking(&self.model_name);
-
-        // Thinking-capable models (Opus 4+, Sonnet 4.5+) need a higher max_tokens
-        // because adaptive thinking uses part of the token budget for internal reasoning.
-        // 16384 gives ample room for both thinking and visible output.
-        let default_max_tokens = if is_thinking_model { 16384 } else { 8192 };
+        // Look up model capabilities from the catalog.
+        let caps = capabilities::get_capabilities(&self.model_name);
+        let default_max_tokens = caps.max_output_tokens as u64;
 
         let mut body = serde_json::json!({
             "model": self.model_name,
@@ -344,25 +342,46 @@ impl SpacebotModel {
             body["temperature"] = serde_json::json!(temperature);
         }
 
-        // Enable adaptive thinking for models that support it.
-        // Adaptive thinking is what makes Opus 4.6 qualitatively different from Sonnet —
-        // the model decides when to think, producing higher-quality responses.
-        // Thinking blocks are preserved as Reasoning in conversation history and
-        // passed back to the API. This is required for tool-use continuations and
-        // the API auto-filters older thinking blocks from previous turns.
+        // Configure thinking based on model capabilities.
         //
-        // Note: When thinking is adaptive/enabled, temperature must be 1 or unset.
-        // We strip any explicit temperature to avoid API errors.
-        if is_thinking_model {
-            body["thinking"] = serde_json::json!({"type": "adaptive"});
-            // Anthropic requires temperature = 1 (or unset) when thinking is active
-            if body.get("temperature").is_some() {
-                tracing::debug!(
-                    model = %self.model_name,
-                    "stripping temperature for thinking-capable model (must be 1 or unset)"
-                );
-                body.as_object_mut().unwrap().remove("temperature");
+        // - Adaptive: model decides when/how much to think (`{type: "adaptive"}`).
+        //   Available on Sonnet 4.6 and Opus 4.6.
+        // - Extended: model must think with an explicit budget
+        //   (`{type: "enabled", budget_tokens: N}`).
+        //   Used by Haiku 4.5, Sonnet 4.5, and older Opus models.
+        // - None: no thinking block sent.
+        //
+        // When thinking is active, temperature must be 1 or unset (Anthropic API
+        // requirement). We strip any explicit temperature to avoid errors.
+        match &caps.thinking {
+            ThinkingSupport::Adaptive => {
+                body["thinking"] = serde_json::json!({"type": "adaptive"});
+                if body.get("temperature").is_some() {
+                    tracing::debug!(
+                        model = %self.model_name,
+                        "stripping temperature for adaptive-thinking model (must be 1 or unset)"
+                    );
+                    body.as_object_mut().unwrap().remove("temperature");
+                }
             }
+            ThinkingSupport::Extended { default_budget } => {
+                // Budget must be less than max_tokens. Leave room for visible output.
+                let max_tokens = request.max_tokens.unwrap_or(default_max_tokens);
+                let budget = std::cmp::min(*default_budget as u64, max_tokens.saturating_sub(1024));
+                body["thinking"] = serde_json::json!({
+                    "type": "enabled",
+                    "budget_tokens": budget,
+                });
+                if body.get("temperature").is_some() {
+                    tracing::debug!(
+                        model = %self.model_name,
+                        budget,
+                        "stripping temperature for extended-thinking model (must be 1 or unset)"
+                    );
+                    body.as_object_mut().unwrap().remove("temperature");
+                }
+            }
+            ThinkingSupport::None => {}
         }
 
         if !request.tools.is_empty() {
@@ -975,29 +994,6 @@ fn normalize_ollama_base_url(configured: Option<String>) -> String {
     base_url
 }
 
-/// Check if a model supports the thinking/extended-thinking feature.
-///
-/// These models have adaptive thinking by default. When used without an explicit
-/// `thinking` configuration, they may produce thinking-only responses. We set
-/// `thinking: adaptive` for these models so they can use their full capabilities.
-///
-/// Models that support thinking:
-/// - Claude Opus 4+ (4.0, 4.1, 4.5, 4.6)
-/// - Claude Sonnet 4.5+
-/// - Claude Haiku 4.5+
-///
-/// Models that do NOT support thinking:
-/// - Claude Sonnet 4.0 (claude-sonnet-4-20250514)
-/// - Claude 3.x models
-fn model_supports_thinking(model_name: &str) -> bool {
-    model_name.starts_with("claude-opus-4")
-        || model_name.starts_with("claude-sonnet-4-5")
-        || model_name.starts_with("claude-sonnet-4.5")
-        || model_name.starts_with("claude-sonnet-4-6")
-        || model_name.starts_with("claude-sonnet-4.6")
-        || model_name.starts_with("claude-haiku-4-5")
-        || model_name.starts_with("claude-haiku-4.5")
-}
 
 fn tool_result_content_to_string(content: &OneOrMany<rig::message::ToolResultContent>) -> String {
     content
