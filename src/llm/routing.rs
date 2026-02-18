@@ -30,19 +30,28 @@ pub struct RoutingConfig {
 impl Default for RoutingConfig {
     fn default() -> Self {
         Self {
-            channel: "anthropic/claude-sonnet-4-20250514".into(),
-            branch: "anthropic/claude-sonnet-4-20250514".into(),
-            worker: "anthropic/claude-haiku-4.5-20250514".into(),
-            compactor: "anthropic/claude-haiku-4.5-20250514".into(),
-            cortex: "anthropic/claude-haiku-4.5-20250514".into(),
+            channel: "anthropic/claude-sonnet-4-6".into(),
+            branch: "anthropic/claude-sonnet-4-6".into(),
+            worker: "anthropic/claude-haiku-4-5-20250514".into(),
+            compactor: "anthropic/claude-haiku-4-5-20250514".into(),
+            cortex: "anthropic/claude-haiku-4-5-20250514".into(),
             task_overrides: HashMap::from([(
                 "coding".into(),
-                "anthropic/claude-sonnet-4-20250514".into(),
+                "anthropic/claude-sonnet-4-6".into(),
             )]),
-            fallbacks: HashMap::from([(
-                "anthropic/claude-sonnet-4-20250514".into(),
-                vec!["anthropic/claude-haiku-4.5-20250514".into()],
-            )]),
+            fallbacks: HashMap::from([
+                (
+                    "anthropic/claude-opus-4-6".into(),
+                    vec![
+                        "anthropic/claude-sonnet-4-6".into(),
+                        "anthropic/claude-haiku-4-5-20250514".into(),
+                    ],
+                ),
+                (
+                    "anthropic/claude-sonnet-4-6".into(),
+                    vec!["anthropic/claude-haiku-4-5-20250514".into()],
+                ),
+            ]),
             rate_limit_cooldown_secs: 60,
         }
     }
@@ -126,14 +135,14 @@ pub fn is_context_overflow_error(error_message: &str) -> bool {
 pub fn defaults_for_provider(provider: &str) -> RoutingConfig {
     match provider {
         "openrouter" => {
-            let channel: String = "openrouter/anthropic/claude-sonnet-4-20250514".into();
-            let worker: String = "openrouter/anthropic/claude-haiku-4.5-20250514".into();
+            let channel: String = "openrouter/anthropic/claude-sonnet-4-6".into();
+            let worker: String = "openrouter/anthropic/claude-haiku-4-5-20250514".into();
             RoutingConfig {
-                channel: "openrouter/anthropic/claude-sonnet-4-20250514".into(),
-                branch: "openrouter/anthropic/claude-sonnet-4-20250514".into(),
-                worker: "openrouter/anthropic/claude-haiku-4.5-20250514".into(),
-                compactor: "openrouter/anthropic/claude-haiku-4.5-20250514".into(),
-                cortex: "openrouter/anthropic/claude-haiku-4.5-20250514".into(),
+                channel: "openrouter/anthropic/claude-sonnet-4-6".into(),
+                branch: "openrouter/anthropic/claude-sonnet-4-6".into(),
+                worker: "openrouter/anthropic/claude-haiku-4-5-20250514".into(),
+                compactor: "openrouter/anthropic/claude-haiku-4-5-20250514".into(),
+                cortex: "openrouter/anthropic/claude-haiku-4-5-20250514".into(),
                 task_overrides: HashMap::from([("coding".into(), channel.clone())]),
                 fallbacks: HashMap::from([(channel, vec![worker])]),
                 rate_limit_cooldown_secs: 60,
