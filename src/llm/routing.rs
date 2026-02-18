@@ -129,13 +129,13 @@ pub fn defaults_for_provider(provider: &str) -> RoutingConfig {
         "anthropic" => RoutingConfig::for_model("anthropic/claude-sonnet-4-6".into()),
         "openrouter" => {
             let channel: String = "openrouter/anthropic/claude-sonnet-4-6".into();
-            let worker: String = "openrouter/anthropic/claude-haiku-4-5-20250514".into();
+            let worker: String = "openrouter/anthropic/claude-haiku-4-5-20251001".into();
             RoutingConfig {
                 channel: "openrouter/anthropic/claude-sonnet-4-6".into(),
                 branch: "openrouter/anthropic/claude-sonnet-4-6".into(),
-                worker: "openrouter/anthropic/claude-haiku-4-5-20250514".into(),
-                compactor: "openrouter/anthropic/claude-haiku-4-5-20250514".into(),
-                cortex: "openrouter/anthropic/claude-haiku-4-5-20250514".into(),
+                worker: "openrouter/anthropic/claude-haiku-4-5-20251001".into(),
+                compactor: "openrouter/anthropic/claude-haiku-4-5-20251001".into(),
+                cortex: "openrouter/anthropic/claude-haiku-4-5-20251001".into(),
                 task_overrides: HashMap::from([("coding".into(), channel.clone())]),
                 fallbacks: HashMap::from([(channel, vec![worker])]),
                 rate_limit_cooldown_secs: 60,
