@@ -1253,17 +1253,26 @@ fn parse_anthropic_response(
             // - Response contained only thinking blocks (adaptive thinking with no visible output)
             // - Completely empty content array
             //
-            // We add a placeholder text because:
-            // 1. Anthropic's API rejects whitespace-only text content blocks
-            // 2. The Discord bot needs something to display to the user
-            // Note: The actual thinking content is preserved in Reasoning blocks above.
-            tracing::debug!(
-                block_types = ?block_types,
-                stop_reason,
-                has_reasoning,
-                "Anthropic response had no visible text/tool_use, adding placeholder"
-            );
-            assistant_content.push(AssistantContent::Text(Text { text: "[thinking]".to_string() }));
+            // If we already have Reasoning blocks, don't add a text placeholder —
+            // the Reasoning blocks are sufficient content for OneOrMany and the
+            // "[thinking]" placeholder was leaking into visible Discord replies.
+            if has_reasoning {
+                tracing::debug!(
+                    block_types = ?block_types,
+                    stop_reason,
+                    "Anthropic response had only thinking blocks, reasoning preserved (no text placeholder needed)"
+                );
+            } else {
+                // No reasoning blocks either — we need a minimal text placeholder
+                // to satisfy OneOrMany and the alternation pattern.
+                tracing::debug!(
+                    block_types = ?block_types,
+                    stop_reason,
+                    has_reasoning,
+                    "Anthropic response had no visible text/tool_use and no reasoning, adding placeholder"
+                );
+                assistant_content.push(AssistantContent::Text(Text { text: "[thinking]".to_string() }));
+            }
         } else if assistant_content.is_empty() {
             // Unexpected empty content — no thinking blocks either
             let full_body_str = serde_json::to_string_pretty(&body).unwrap_or_default();
