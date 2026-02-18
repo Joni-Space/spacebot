@@ -901,6 +901,8 @@ fn model_supports_thinking(model_name: &str) -> bool {
     model_name.starts_with("claude-opus-4")
         || model_name.starts_with("claude-sonnet-4-5")
         || model_name.starts_with("claude-sonnet-4.5")
+        || model_name.starts_with("claude-sonnet-4-6")
+        || model_name.starts_with("claude-sonnet-4.6")
         || model_name.starts_with("claude-haiku-4-5")
         || model_name.starts_with("claude-haiku-4.5")
 }
