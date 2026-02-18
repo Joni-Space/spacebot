@@ -2866,7 +2866,7 @@ fn curated_models() -> Vec<ModelInfo> {
             curated: true,
         },
         ModelInfo {
-            id: "anthropic/claude-haiku-4-5-20250514".into(),
+            id: "anthropic/claude-haiku-4-5-20251001".into(),
             name: "Claude Haiku 4.5".into(),
             provider: "anthropic".into(),
             context_window: Some(200_000),
@@ -2910,7 +2910,7 @@ fn curated_models() -> Vec<ModelInfo> {
             curated: true,
         },
         ModelInfo {
-            id: "openrouter/anthropic/claude-haiku-4-5-20250514".into(),
+            id: "openrouter/anthropic/claude-haiku-4-5-20251001".into(),
             name: "Claude Haiku 4.5".into(),
             provider: "openrouter".into(),
             context_window: Some(200_000),
