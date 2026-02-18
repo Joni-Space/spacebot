@@ -1521,6 +1521,7 @@ impl Config {
 
         // Check if we have any legacy env keys configured
         let has_legacy_keys = std::env::var("ANTHROPIC_API_KEY").is_ok()
+            || std::env::var("ANTHROPIC_OAUTH_TOKEN").is_ok()
             || std::env::var("OPENAI_API_KEY").is_ok()
             || std::env::var("OPENROUTER_API_KEY").is_ok()
             || std::env::var("ZHIPU_API_KEY").is_ok()
