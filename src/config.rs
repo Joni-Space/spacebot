@@ -1145,8 +1145,10 @@ impl Config {
         if config_path.exists() {
             return false;
         }
-        // No config file — check if env vars can bootstrap
+        // No config file — check if env vars can bootstrap.
+        // Accept either API key or OAuth token for Anthropic.
         std::env::var("ANTHROPIC_API_KEY").is_err()
+            && std::env::var("ANTHROPIC_OAUTH_TOKEN").is_err()
             && std::env::var("OPENAI_API_KEY").is_err()
             && std::env::var("OPENROUTER_API_KEY").is_err()
             && std::env::var("OPENCODE_ZEN_API_KEY").is_err()

@@ -2659,7 +2659,7 @@ async fn update_provider(
             .and_then(|d| d.get("routing"))
             .and_then(|r| r.get("channel"))
             .and_then(|v| v.as_str())
-            .unwrap_or("anthropic/claude-sonnet-4-20250514");
+            .unwrap_or("anthropic/claude-sonnet-4-6");
 
         let current_provider =
             crate::llm::routing::provider_from_model(current_channel);
@@ -2836,46 +2836,90 @@ struct ModelsResponse {
 /// Static curated model list — the "known good" models we recommend.
 fn curated_models() -> Vec<ModelInfo> {
     vec![
-        // Anthropic (direct)
+        // Anthropic (direct) — current generation
         ModelInfo {
-            id: "anthropic/claude-sonnet-4-20250514".into(),
-            name: "Claude Sonnet 4".into(),
+            id: "anthropic/claude-opus-4-6".into(),
+            name: "Claude Opus 4.6".into(),
+            provider: "anthropic".into(),
+            context_window: Some(1_000_000),
+            curated: true,
+        },
+        ModelInfo {
+            id: "anthropic/claude-sonnet-4-6".into(),
+            name: "Claude Sonnet 4.6".into(),
+            provider: "anthropic".into(),
+            context_window: Some(1_000_000),
+            curated: true,
+        },
+        ModelInfo {
+            id: "anthropic/claude-haiku-4-5-20250514".into(),
+            name: "Claude Haiku 4.5".into(),
+            provider: "anthropic".into(),
+            context_window: Some(200_000),
+            curated: true,
+        },
+        // Anthropic (direct) — legacy
+        ModelInfo {
+            id: "anthropic/claude-sonnet-4-5-20250514".into(),
+            name: "Claude Sonnet 4.5 (legacy)".into(),
             provider: "anthropic".into(),
             context_window: Some(200_000),
             curated: true,
         },
         ModelInfo {
-            id: "anthropic/claude-haiku-4.5-20250514".into(),
-            name: "Claude Haiku 4.5".into(),
+            id: "anthropic/claude-sonnet-4-20250514".into(),
+            name: "Claude Sonnet 4 (legacy)".into(),
             provider: "anthropic".into(),
             context_window: Some(200_000),
             curated: true,
         },
         ModelInfo {
             id: "anthropic/claude-opus-4-20250514".into(),
-            name: "Claude Opus 4".into(),
+            name: "Claude Opus 4 (legacy)".into(),
             provider: "anthropic".into(),
             context_window: Some(200_000),
             curated: true,
         },
-        // OpenRouter
+        // OpenRouter — current generation
         ModelInfo {
-            id: "openrouter/anthropic/claude-sonnet-4-20250514".into(),
-            name: "Claude Sonnet 4".into(),
+            id: "openrouter/anthropic/claude-opus-4-6".into(),
+            name: "Claude Opus 4.6".into(),
+            provider: "openrouter".into(),
+            context_window: Some(1_000_000),
+            curated: true,
+        },
+        ModelInfo {
+            id: "openrouter/anthropic/claude-sonnet-4-6".into(),
+            name: "Claude Sonnet 4.6".into(),
+            provider: "openrouter".into(),
+            context_window: Some(1_000_000),
+            curated: true,
+        },
+        ModelInfo {
+            id: "openrouter/anthropic/claude-haiku-4-5-20250514".into(),
+            name: "Claude Haiku 4.5".into(),
+            provider: "openrouter".into(),
+            context_window: Some(200_000),
+            curated: true,
+        },
+        // OpenRouter — legacy
+        ModelInfo {
+            id: "openrouter/anthropic/claude-sonnet-4-5-20250514".into(),
+            name: "Claude Sonnet 4.5 (legacy)".into(),
             provider: "openrouter".into(),
             context_window: Some(200_000),
             curated: true,
         },
         ModelInfo {
-            id: "openrouter/anthropic/claude-haiku-4.5-20250514".into(),
-            name: "Claude Haiku 4.5".into(),
+            id: "openrouter/anthropic/claude-sonnet-4-20250514".into(),
+            name: "Claude Sonnet 4 (legacy)".into(),
             provider: "openrouter".into(),
             context_window: Some(200_000),
             curated: true,
         },
         ModelInfo {
             id: "openrouter/anthropic/claude-opus-4-20250514".into(),
-            name: "Claude Opus 4".into(),
+            name: "Claude Opus 4 (legacy)".into(),
             provider: "openrouter".into(),
             context_window: Some(200_000),
             curated: true,
