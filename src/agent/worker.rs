@@ -632,7 +632,7 @@ fn build_worker_recap(messages: &[rig::message::Message]) -> String {
                         recap.push_str(&format!("- Called `{}` ({args})\n", tc.function.name));
                     }
                     if let rig::message::AssistantContent::Text(t) = item {
-                        if !t.text.is_empty() {
+                        if !t.text.is_empty() && t.text != "[thinking]" {
                             recap.push_str(&format!("- Noted: {}\n", t.text));
                         }
                     }
@@ -667,7 +667,12 @@ fn extract_last_assistant_text(history: &[rig::message::Message]) -> Option<Stri
                 .iter()
                 .filter_map(|c| {
                     if let rig::message::AssistantContent::Text(t) = c {
-                        Some(t.text.clone())
+                        // Skip the "[thinking]" placeholder — internal marker only
+                        if t.text == "[thinking]" {
+                            None
+                        } else {
+                            Some(t.text.clone())
+                        }
                     } else {
                         None
                     }
