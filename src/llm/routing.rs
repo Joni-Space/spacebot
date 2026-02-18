@@ -32,9 +32,9 @@ impl Default for RoutingConfig {
         Self {
             channel: "anthropic/claude-sonnet-4-6".into(),
             branch: "anthropic/claude-sonnet-4-6".into(),
-            worker: "anthropic/claude-haiku-4-5-20250514".into(),
-            compactor: "anthropic/claude-haiku-4-5-20250514".into(),
-            cortex: "anthropic/claude-haiku-4-5-20250514".into(),
+            worker: "anthropic/claude-haiku-4-5-20251001".into(),
+            compactor: "anthropic/claude-haiku-4-5-20251001".into(),
+            cortex: "anthropic/claude-haiku-4-5-20251001".into(),
             task_overrides: HashMap::from([(
                 "coding".into(),
                 "anthropic/claude-sonnet-4-6".into(),
@@ -44,12 +44,12 @@ impl Default for RoutingConfig {
                     "anthropic/claude-opus-4-6".into(),
                     vec![
                         "anthropic/claude-sonnet-4-6".into(),
-                        "anthropic/claude-haiku-4-5-20250514".into(),
+                        "anthropic/claude-haiku-4-5-20251001".into(),
                     ],
                 ),
                 (
                     "anthropic/claude-sonnet-4-6".into(),
-                    vec!["anthropic/claude-haiku-4-5-20250514".into()],
+                    vec!["anthropic/claude-haiku-4-5-20251001".into()],
                 ),
             ]),
             rate_limit_cooldown_secs: 60,
@@ -136,13 +136,13 @@ pub fn defaults_for_provider(provider: &str) -> RoutingConfig {
     match provider {
         "openrouter" => {
             let channel: String = "openrouter/anthropic/claude-sonnet-4-6".into();
-            let worker: String = "openrouter/anthropic/claude-haiku-4-5-20250514".into();
+            let worker: String = "openrouter/anthropic/claude-haiku-4-5-20251001".into();
             RoutingConfig {
                 channel: "openrouter/anthropic/claude-sonnet-4-6".into(),
                 branch: "openrouter/anthropic/claude-sonnet-4-6".into(),
-                worker: "openrouter/anthropic/claude-haiku-4-5-20250514".into(),
-                compactor: "openrouter/anthropic/claude-haiku-4-5-20250514".into(),
-                cortex: "openrouter/anthropic/claude-haiku-4-5-20250514".into(),
+                worker: "openrouter/anthropic/claude-haiku-4-5-20251001".into(),
+                compactor: "openrouter/anthropic/claude-haiku-4-5-20251001".into(),
+                cortex: "openrouter/anthropic/claude-haiku-4-5-20251001".into(),
                 task_overrides: HashMap::from([("coding".into(), channel.clone())]),
                 fallbacks: HashMap::from([(channel, vec![worker])]),
                 rate_limit_cooldown_secs: 60,
