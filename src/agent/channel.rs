@@ -770,10 +770,12 @@ impl Channel {
                     // directly. Some models respond with text instead of tool calls.
                     // When the text looks like tool call syntax (e.g. "[reply]\n{\"content\": \"hi\"}"),
                     // attempt to extract the reply content and send that instead.
+                    // Also filter out the "[thinking]" placeholder — it's an internal marker
+                    // for thinking-only responses and must never be sent to users.
                     let text = response.trim();
                     let extracted = extract_reply_from_tool_syntax(text);
                     let final_text = extracted.as_deref().unwrap_or(text);
-                    if !final_text.is_empty() {
+                    if !final_text.is_empty() && final_text != "[thinking]" {
                         if extracted.is_some() {
                             tracing::warn!(channel_id = %self.id, "extracted reply from malformed tool syntax in LLM text output");
                         }
