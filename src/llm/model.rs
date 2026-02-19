@@ -486,6 +486,79 @@ impl SpacebotModel {
                 )));
             }
 
+            // Detect image-related 400 errors and retry with images stripped.
+            //
+            // When Discord (or another platform) declares the wrong MIME type and
+            // our magic-bytes detection misses it, Anthropic rejects the request
+            // with errors like "Image does not match the provided media type" or
+            // "Could not process image". Because the bad image lives in
+            // conversation history, EVERY subsequent message would fail —
+            // permanently bricking the channel.
+            //
+            // As a resilience measure, strip all image content blocks from the
+            // messages and retry once. The user loses image context for this turn,
+            // but the channel stays functional.
+            if status.as_u16() == 400 && is_image_content_error(message) {
+                tracing::warn!(
+                    model = %self.model_name,
+                    error_message = %message,
+                    "Anthropic rejected request due to image content error — stripping images and retrying"
+                );
+
+                let stripped_messages = strip_image_blocks_from_messages(&messages);
+                body["messages"] = serde_json::json!(stripped_messages);
+
+                let mut retry_req = self
+                    .llm_manager
+                    .http_client()
+                    .post("https://api.anthropic.com/v1/messages")
+                    .header("anthropic-version", "2023-06-01")
+                    .header("content-type", "application/json");
+
+                match &auth {
+                    super::manager::AnthropicAuth::ApiKey(key) => {
+                        retry_req = retry_req.header("x-api-key", key);
+                    }
+                    super::manager::AnthropicAuth::OAuthToken(token) => {
+                        retry_req = retry_req
+                            .header("Authorization", format!("Bearer {}", token))
+                            .header("anthropic-beta", "oauth-2025-04-20");
+                    }
+                }
+
+                let retry_response = retry_req
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| CompletionError::ProviderError(e.to_string()))?;
+
+                let retry_status = retry_response.status();
+                let retry_text = retry_response
+                    .text()
+                    .await
+                    .map_err(|e| CompletionError::ProviderError(format!("failed to read retry response body: {e}")))?;
+
+                let retry_body: serde_json::Value = serde_json::from_str(&retry_text)
+                    .map_err(|e| CompletionError::ProviderError(format!(
+                        "Anthropic retry response ({retry_status}) is not valid JSON: {e}\nBody: {}", truncate_body(&retry_text)
+                    )))?;
+
+                if !retry_status.is_success() {
+                    let retry_message = retry_body["error"]["message"]
+                        .as_str()
+                        .unwrap_or("unknown error");
+                    return Err(CompletionError::ProviderError(format!(
+                        "Anthropic API error after image-strip retry ({retry_status}): {retry_message}"
+                    )));
+                }
+
+                tracing::info!(
+                    model = %self.model_name,
+                    "Anthropic image-strip retry succeeded"
+                );
+                return parse_anthropic_response(retry_body);
+            }
+
             return Err(CompletionError::ProviderError(format!(
                 "Anthropic API error ({status}): {message}"
             )));
@@ -1479,4 +1552,54 @@ fn parse_openai_response(
         },
         raw_response: RawResponse { body },
     })
+}
+
+// --- Image error resilience helpers ---
+
+/// Check whether an Anthropic error message indicates a problem with image content.
+///
+/// These errors occur when the declared MIME type doesn't match the actual image
+/// data, or when the image is corrupted/unprocessable. They are 400-level errors
+/// that won't resolve on retry unless the offending image is removed.
+fn is_image_content_error(error_message: &str) -> bool {
+    let lower = error_message.to_lowercase();
+    lower.contains("image does not match")
+        || lower.contains("could not process image")
+        || lower.contains("invalid image")
+        || lower.contains("image is too")
+        || lower.contains("media type")
+}
+
+/// Strip all image content blocks from Anthropic-formatted messages.
+///
+/// Replaces each image block with a text placeholder indicating the image was
+/// removed, preserving the message structure so conversation alternation stays
+/// valid. This is used as a last-resort recovery when Anthropic rejects a
+/// request due to image content errors.
+fn strip_image_blocks_from_messages(
+    messages: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .map(|msg| {
+            let mut msg = msg.clone();
+            if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
+                let mut had_images = false;
+                content.retain(|block| {
+                    let is_image = block.get("type").and_then(|t| t.as_str()) == Some("image");
+                    if is_image {
+                        had_images = true;
+                    }
+                    !is_image
+                });
+                if had_images {
+                    content.push(serde_json::json!({
+                        "type": "text",
+                        "text": "[image removed — content was rejected by the API]"
+                    }));
+                }
+            }
+            msg
+        })
+        .collect()
 }

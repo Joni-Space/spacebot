@@ -1520,6 +1520,32 @@ async fn download_attachments(
     parts
 }
 
+/// Detect the actual MIME type of an image from its magic bytes.
+///
+/// Discord (and other platforms) sometimes declare the wrong MIME type for
+/// images (e.g. a PNG file tagged as `image/jpeg`). When we forward this to
+/// Anthropic's API, the request is rejected with "Image does not match the
+/// provided media type". Since the bad image lives in conversation history,
+/// every subsequent message also fails — permanently bricking the channel.
+///
+/// This function inspects the first few bytes of the downloaded image data
+/// and returns the correct MIME type. It takes priority over the platform's
+/// declared `content_type`; the caller should fall back to the declared type
+/// only when this returns `None`.
+fn detect_mime_from_bytes(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n") {
+        Some("image/png")
+    } else if bytes.starts_with(b"\xFF\xD8\xFF") {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF8") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 /// Download an image attachment and encode it as base64 for the LLM.
 async fn download_image_attachment(
     http: &reqwest::Client,
@@ -1541,13 +1567,39 @@ async fn download_image_attachment(
         }
     };
 
+    // Detect actual MIME type from magic bytes, falling back to the declared type.
+    // This prevents "Image does not match the provided media type" errors from
+    // Anthropic when Discord declares the wrong content_type.
+    let effective_mime = match detect_mime_from_bytes(&bytes) {
+        Some(detected) => {
+            if detected != attachment.mime_type {
+                tracing::warn!(
+                    filename = %attachment.filename,
+                    declared_mime = %attachment.mime_type,
+                    detected_mime = %detected,
+                    "MIME type mismatch: magic bytes disagree with declared content_type, using detected type"
+                );
+            }
+            detected.to_string()
+        }
+        None => {
+            tracing::debug!(
+                filename = %attachment.filename,
+                mime = %attachment.mime_type,
+                "could not detect MIME from magic bytes, using declared type"
+            );
+            attachment.mime_type.clone()
+        }
+    };
+
     use base64::Engine as _;
     let base64_data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    let media_type = ImageMediaType::from_mime_type(&attachment.mime_type);
+    let media_type = ImageMediaType::from_mime_type(&effective_mime);
 
     tracing::info!(
         filename = %attachment.filename,
-        mime = %attachment.mime_type,
+        declared_mime = %attachment.mime_type,
+        effective_mime = %effective_mime,
         size = bytes.len(),
         "downloaded image attachment"
     );
