@@ -500,18 +500,22 @@ impl Channel {
             }
         }
 
-        // Combine all user content into a single text
+        // Separate image/file attachments from text content.
+        // Text is combined into a single string; attachments are passed through
+        // to the LLM as proper image/file content blocks.
+        let mut image_content: Vec<UserContent> = Vec::new();
+        let mut text_parts: Vec<String> = Vec::new();
+        for content in user_contents {
+            match content {
+                UserContent::Text(t) => text_parts.push(t.text),
+                other => image_content.push(other),
+            }
+        }
+
         let combined_text = format!(
             "[{} messages arrived rapidly in this channel]\n\n{}",
             message_count,
-            user_contents
-                .iter()
-                .filter_map(|c| match c {
-                    UserContent::Text(t) => Some(t.text.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            text_parts.join("\n")
         );
 
         // Build system prompt with coalesce hint
@@ -519,13 +523,13 @@ impl Channel {
             .build_system_prompt_with_coalesce(message_count, elapsed_secs, unique_sender_count)
             .await;
 
-        // Run agent turn
+        // Run agent turn (image attachments are combined with text into a single message)
         let (result, skip_flag) = self
             .run_agent_turn(
                 &combined_text,
                 &system_prompt,
                 &conversation_id,
-                Vec::new(), // Attachments already formatted into text
+                image_content,
             )
             .await?;
 
@@ -830,16 +834,6 @@ impl Channel {
             .send(OutboundResponse::Status(crate::StatusUpdate::Thinking))
             .await;
 
-        // Inject attachments as a user message before the text prompt
-        if !attachment_content.is_empty() {
-            let mut history = self.state.history.write().await;
-            let content = OneOrMany::many(attachment_content).unwrap_or_else(|_| {
-                OneOrMany::one(UserContent::text("[attachment processing failed]"))
-            });
-            history.push(rig::message::Message::User { content });
-            drop(history);
-        }
-
         // Clone history out so the write lock is released before the agentic loop.
         // The branch tool needs a read lock on history to clone it for the branch,
         // and holding a write lock across the entire agentic loop would deadlock.
@@ -848,8 +842,22 @@ impl Channel {
             guard.clone()
         };
 
+        // Build the user message. If there are image/file attachments, combine them
+        // with the text into a single User message so the LLM sees them together.
+        // This avoids creating two consecutive User messages (which Anthropic rejects).
+        let prompt_message: rig::message::Message = if attachment_content.is_empty() {
+            user_text.into()
+        } else {
+            let mut parts = attachment_content;
+            parts.push(UserContent::text(user_text));
+            rig::message::Message::User {
+                content: OneOrMany::many(parts)
+                    .unwrap_or_else(|_| OneOrMany::one(UserContent::text(user_text))),
+            }
+        };
+
         let mut result = agent
-            .prompt(user_text)
+            .prompt(prompt_message)
             .with_history(&mut history)
             .with_hook(self.hook.clone())
             .await;
@@ -1695,6 +1703,32 @@ async fn download_attachments(
     parts
 }
 
+/// Detect the actual MIME type of an image from its magic bytes.
+///
+/// Discord (and other platforms) sometimes declare the wrong MIME type for
+/// images (e.g. a PNG file tagged as `image/jpeg`). When we forward this to
+/// Anthropic's API, the request is rejected with "Image does not match the
+/// provided media type". Since the bad image lives in conversation history,
+/// every subsequent message also fails — permanently bricking the channel.
+///
+/// This function inspects the first few bytes of the downloaded image data
+/// and returns the correct MIME type. It takes priority over the platform's
+/// declared `content_type`; the caller should fall back to the declared type
+/// only when this returns `None`.
+fn detect_mime_from_bytes(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n") {
+        Some("image/png")
+    } else if bytes.starts_with(b"\xFF\xD8\xFF") {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF8") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 /// Download an image attachment and encode it as base64 for the LLM.
 async fn download_image_attachment(
     http: &reqwest::Client,
@@ -1722,13 +1756,39 @@ async fn download_image_attachment(
         }
     };
 
+    // Detect actual MIME type from magic bytes, falling back to the declared type.
+    // This prevents "Image does not match the provided media type" errors from
+    // Anthropic when Discord declares the wrong content_type.
+    let effective_mime = match detect_mime_from_bytes(&bytes) {
+        Some(detected) => {
+            if detected != attachment.mime_type {
+                tracing::warn!(
+                    filename = %attachment.filename,
+                    declared_mime = %attachment.mime_type,
+                    detected_mime = %detected,
+                    "MIME type mismatch: magic bytes disagree with declared content_type, using detected type"
+                );
+            }
+            detected.to_string()
+        }
+        None => {
+            tracing::debug!(
+                filename = %attachment.filename,
+                mime = %attachment.mime_type,
+                "could not detect MIME from magic bytes, using declared type"
+            );
+            attachment.mime_type.clone()
+        }
+    };
+
     use base64::Engine as _;
     let base64_data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    let media_type = ImageMediaType::from_mime_type(&attachment.mime_type);
+    let media_type = ImageMediaType::from_mime_type(&effective_mime);
 
     tracing::info!(
         filename = %attachment.filename,
-        mime = %attachment.mime_type,
+        declared_mime = %attachment.mime_type,
+        effective_mime = %effective_mime,
         size = bytes.len(),
         "downloaded image attachment"
     );
