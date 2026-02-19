@@ -507,11 +507,17 @@ fn extract_content(message: &Message) -> MessageContent {
         let attachments = message
             .attachments
             .iter()
-            .map(|attachment| crate::Attachment {
-                filename: attachment.filename.clone(),
-                mime_type: attachment.content_type.clone().unwrap_or_default(),
-                url: attachment.url.clone(),
-                size_bytes: Some(attachment.size as u64),
+            .map(|attachment| {
+                let mime_type = attachment
+                    .content_type
+                    .clone()
+                    .unwrap_or_else(|| infer_mime_type(&attachment.filename));
+                crate::Attachment {
+                    filename: attachment.filename.clone(),
+                    mime_type,
+                    url: attachment.url.clone(),
+                    size_bytes: Some(attachment.size as u64),
+                }
             })
             .collect();
 
@@ -618,6 +624,43 @@ async fn build_metadata(ctx: &Context, message: &Message) -> (HashMap<String, se
     }
 
     (metadata, formatted_author)
+}
+
+/// Infer MIME type from a filename extension.
+///
+/// Used as a fallback when Discord doesn't provide `content_type` for an attachment.
+fn infer_mime_type(filename: &str) -> String {
+    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        "svg" => "image/svg+xml",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        "wav" => "audio/wav",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "js" => "application/javascript",
+        "ts" => "application/typescript",
+        "yaml" | "yml" => "application/yaml",
+        "toml" => "application/toml",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "csv" => "text/csv",
+        "md" => "text/markdown",
+        "rs" => "text/x-rust",
+        "py" => "text/x-python",
+        _ => "application/octet-stream",
+    }
+    .to_string()
 }
 
 /// Split a message into chunks that fit within Discord's 2000 char limit.
