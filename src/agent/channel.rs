@@ -450,17 +450,22 @@ impl Channel {
             }
         }
         
-        // Combine all user content into a single text
+        // Separate image/file attachments from text content.
+        // Text is combined into a single string; attachments are passed through
+        // to the LLM as proper image/file content blocks.
+        let mut image_content: Vec<UserContent> = Vec::new();
+        let mut text_parts: Vec<String> = Vec::new();
+        for content in user_contents {
+            match content {
+                UserContent::Text(t) => text_parts.push(t.text),
+                other => image_content.push(other),
+            }
+        }
+
         let combined_text = format!(
             "[{} messages arrived rapidly in this channel]\n\n{}",
             message_count,
-            user_contents.iter()
-                .filter_map(|c| match c {
-                    UserContent::Text(t) => Some(t.text.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
+            text_parts.join("\n")
         );
         
         // Build system prompt with coalesce hint
@@ -470,12 +475,12 @@ impl Channel {
             unique_sender_count,
         ).await;
         
-        // Run agent turn
+        // Run agent turn (image attachments are combined with text into a single message)
         let (result, skip_flag) = self.run_agent_turn(
             &combined_text,
             &system_prompt,
             &conversation_id,
-            Vec::new(), // Attachments already formatted into text
+            image_content,
         ).await?;
         
         self.handle_agent_result(result, &skip_flag).await;
@@ -704,15 +709,6 @@ impl Channel {
 
         let _ = self.response_tx.send(OutboundResponse::Status(crate::StatusUpdate::Thinking)).await;
 
-        // Inject attachments as a user message before the text prompt
-        if !attachment_content.is_empty() {
-            let mut history = self.state.history.write().await;
-            let content = OneOrMany::many(attachment_content)
-                .unwrap_or_else(|_| OneOrMany::one(UserContent::text("[attachment processing failed]")));
-            history.push(rig::message::Message::User { content });
-            drop(history);
-        }
-
         // Clone history out so the write lock is released before the agentic loop.
         // The branch tool needs a read lock on history to clone it for the branch,
         // and holding a write lock across the entire agentic loop would deadlock.
@@ -721,7 +717,21 @@ impl Channel {
             guard.clone()
         };
 
-        let mut result = agent.prompt(user_text)
+        // Build the user message. If there are image/file attachments, combine them
+        // with the text into a single User message so the LLM sees them together.
+        // This avoids creating two consecutive User messages (which Anthropic rejects).
+        let prompt_message: rig::message::Message = if attachment_content.is_empty() {
+            user_text.into()
+        } else {
+            let mut parts = attachment_content;
+            parts.push(UserContent::text(user_text));
+            rig::message::Message::User {
+                content: OneOrMany::many(parts)
+                    .unwrap_or_else(|_| OneOrMany::one(UserContent::text(user_text))),
+            }
+        };
+
+        let mut result = agent.prompt(prompt_message)
             .with_history(&mut history)
             .with_hook(self.hook.clone())
             .await;
