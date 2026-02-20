@@ -7802,6 +7802,7 @@ dependencies = [
  "daemonize",
  "dialoguer",
  "dirs",
+ "dotenvy",
  "fastembed",
  "futures",
  "indoc",
