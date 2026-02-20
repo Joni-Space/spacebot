@@ -81,7 +81,8 @@ impl LlmManager {
                     return Ok(provider.api_key);
                 }
             }
-            if let Some(token) = &self.config.anthropic_oauth_token {
+            let config = self.config.load();
+            if let Some(ref token) = config.anthropic_oauth_token {
                 return Ok(token.clone());
             }
             return Err(LlmError::MissingProviderKey(provider_id.to_string()).into());
@@ -103,12 +104,13 @@ impl LlmManager {
 
     /// Resolve Anthropic authentication — prefers OAuth token over API key.
     pub fn get_anthropic_auth(&self) -> Result<AnthropicAuth> {
-        if let Some(token) = &self.config.anthropic_oauth_token {
+        let config = self.config.load();
+        if let Some(ref token) = config.anthropic_oauth_token {
             if !token.is_empty() {
                 return Ok(AnthropicAuth::OAuthToken(token.clone()));
             }
         }
-        if let Some(key) = &self.config.anthropic_key {
+        if let Some(ref key) = config.anthropic_key {
             if !key.is_empty() {
                 return Ok(AnthropicAuth::ApiKey(key.clone()));
             }

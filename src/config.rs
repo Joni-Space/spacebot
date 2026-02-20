@@ -1101,6 +1101,7 @@ struct TomlProviderConfig {
 #[derive(Deserialize, Default)]
 struct TomlLlmConfigFields {
     anthropic_key: Option<String>,
+    anthropic_oauth_token: Option<String>,
     openai_key: Option<String>,
     openrouter_key: Option<String>,
     zhipu_key: Option<String>,
@@ -1179,6 +1180,8 @@ impl<'de> Deserialize<'de> for TomlLlmConfig {
 
         Ok(Self {
             anthropic_key: fields.anthropic_key,
+            anthropic_oauth_token: fields.anthropic_oauth_token
+                .or_else(|| std::env::var("ANTHROPIC_OAUTH_TOKEN").ok()),
             openai_key: fields.openai_key,
             openrouter_key: fields.openrouter_key,
             zhipu_key: fields.zhipu_key,
