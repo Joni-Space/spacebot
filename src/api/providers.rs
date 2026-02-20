@@ -196,6 +196,7 @@ fn build_test_llm_config(provider: &str, credential: &str) -> crate::config::Llm
 
     crate::config::LlmConfig {
         anthropic_key: (provider == "anthropic").then(|| credential.to_string()),
+        anthropic_oauth_token: (provider == "anthropic-oauth").then(|| credential.to_string()),
         openai_key: (provider == "openai").then(|| credential.to_string()),
         openrouter_key: (provider == "openrouter").then(|| credential.to_string()),
         zhipu_key: (provider == "zhipu").then(|| credential.to_string()),
