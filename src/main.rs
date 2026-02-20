@@ -108,6 +108,15 @@ struct ActiveChannel {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Load .env files early, before any config parsing.
+    // First load from the default instance directory (~/.spacebot/.env) so that
+    // instance-level vars are available, then load from CWD. Because dotenvy
+    // does NOT overwrite existing env vars, we load CWD *first* so its values
+    // take precedence over the instance-dir file.
+    dotenvy::dotenv().ok();
+    let instance_env = spacebot::config::Config::default_instance_dir().join(".env");
+    dotenvy::from_path(&instance_env).ok();
+
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("failed to install rustls crypto provider");
